@@ -233,11 +233,12 @@ def arg_botcmd(*args,
             return value * repeat
 
     The given `msg` will be the full message object that was received, which includes data
-    like sender, receiver, the plain-text and html body (if applicable), etc. `args` will
-    be a string or list (depending on your value of `split_args_with`) of parameters that
-    were given to the command by the user.
+    like sender, receiver, the plain-text and html body (if applicable), etc.
+    `value` will hold the value passed in place of the `value` argument and
+    `repeat` will hold the value passed in place of the `--repeat-count` argument.
 
-    If you wish to use `unpack_args=False`, define the function like this::
+    If you don't like this automatic *"unpacking"* of the arguments,
+    you can use `unpack_args=False` like this::
 
         @arg_botcmd('value', type=str)
         @arg_botcmd('--repeat-count', dest='repeat', type=int, default=2, unpack_args=False)
@@ -326,18 +327,24 @@ def webhook(*args,
     """
     Decorator for webhooks
 
-    :param uri_rule: A regular expression against which the called URL should
-        match in order for the webhook to trigger. If left undefined then the URL
-        `/<method_name>/` will be used instead.
-    :param methods: A tuple of allowed HTTP methods. By default, only GET and POST
+    :param uri_rule:
+        The URL to use for this webhook, as per Bottle request routing syntax.
+        For more information, see:
+
+        * http://bottlepy.org/docs/dev/tutorial.html#request-routing
+        * http://bottlepy.org/docs/dev/routing.html
+    :param methods:
+        A tuple of allowed HTTP methods. By default, only GET and POST
         are allowed.
-    :param form_param: The key who's contents will be passed to your method's `payload`
-        parameter. This is used for example when using the `application/x-www-form-urlencoded`
+    :param form_param:
+        The key who's contents will be passed to your method's `payload` parameter.
+        This is used for example when using the `application/x-www-form-urlencoded`
         mimetype.
-    :param raw: Boolean to overrides the request decoding (including form_param) and
-        passes the raw http request to your method's `payload`.
-        The passed type in payload will provide the BaseRequest interface as defined here:
-        http://bottlepy.org/docs/dev/api.html#bottle.BaseRequest
+    :param raw:
+        When set to true, this overrides the request decoding (including form_param) and
+        passes the raw http request to your method's `payload` parameter.
+        The value of payload will be a Bottle
+        `BaseRequest <http://bottlepy.org/docs/dev/api.html#bottle.BaseRequest>`_.
 
     This decorator should be applied to methods of :class:`~errbot.botplugin.BotPlugin`
     classes to turn them into webhooks which can be reached on Err's built-in webserver.
@@ -369,8 +376,9 @@ def cmdfilter(*args, **kwargs):
 
     This decorator should be applied to methods of :class:`~errbot.botplugin.BotPlugin`
     classes to turn them into command filters.
-    Those filters are executed just before the execution.
-    It gives a mean to add transversal features like security, logging, audit etc.
+
+    These filters are executed just before the execution of a command and provide
+    the means to add features such as custom security, logging, auditing, etc.
 
     These methods are expected to have a signature and a return a tuple like the following::
 
@@ -389,5 +397,4 @@ def cmdfilter(*args, **kwargs):
 
     if len(args):
         return decorate(args[0], **kwargs)
-    else:
-        return lambda func: decorate(func, **kwargs)
+    return lambda func: decorate(func, **kwargs)

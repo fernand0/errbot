@@ -15,11 +15,15 @@
 #    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
 import inspect
+import locale
+import os
 import sys
 import logging
 import argparse
 from os import path, sep, getcwd, access, W_OK
 from platform import system
+from .plugin_wizard import new_plugin_wizard
+from .version import VERSION
 
 PY3 = sys.version_info[0] == 3
 PY2 = not PY3
@@ -41,10 +45,10 @@ if PY2 and "param='canary'" in foo_src:
     print('Either use python3 or install err using ./setup.py develop.')
     sys.exit(-1)
 
-if sys.getdefaultencoding().lower() != 'utf-8':
-    logging.warn('Starting errbot with a default system encoding other than \'utf-8\''
-                 ' might cause you a heap of troubles.'
-                 ' Your current encoding is set at \'%s\'' % sys.getdefaultencoding())
+if locale.getpreferredencoding().lower() != 'utf-8':
+    logging.warning('Starting errbot with a default system encoding other than \'utf-8\''
+                    ' might cause you a heap of troubles.'
+                    ' Your current encoding is set at \'%s\'' % sys.getdefaultencoding())
 
 log = logging.getLogger(__name__)
 
@@ -150,29 +154,46 @@ def main():
     # the source tree directly without installing it.
     sys.path.insert(0, execution_dir)
 
-    parser = argparse.ArgumentParser(description='The main entry point of the XMPP bot err.')
+    parser = argparse.ArgumentParser(description='The main entry point of the errbot.')
     parser.add_argument('-c', '--config', default=None,
                         help='Full path to your config.py (default: config.py in current working directory).')
-    parser.add_argument('-r', '--restore', nargs='?', default=None, const='default',
-                        help='Restores a bot from backup.py. (default: backup.py from the bot data directory).')
-    parser.add_argument('-l', '--list', action='store_true', help='Lists all the backends found.')
 
-    backend_group = parser.add_mutually_exclusive_group()
-    backend_group.add_argument('-X', '--xmpp', action='store_true', help='XMPP backend [DEFAULT]')
-    backend_group.add_argument('-H', '--hipchat', action='store_true', help='Hipchat backend')
-    backend_group.add_argument('-I', '--irc', action='store_true', help='IRC backend')
-    backend_group.add_argument('-S', '--slack', action='store_true', help='Slack backend')
-    backend_group.add_argument('-T', '--text', action='store_true', help='locale text debug backend')
-    backend_group.add_argument('-G', '--graphic', action='store_true', help='local graphical debug mode backend')
-    backend_group.add_argument('-N', '--null', action='store_true', help='no backend')
+    mode_selection = parser.add_mutually_exclusive_group()
+    mode_selection.add_argument('-v', '--version', action='version', version='Errbot version {}'.format(VERSION))
+    mode_selection.add_argument('-r', '--restore', nargs='?', default=None, const='default',
+                                help='restore a bot from backup.py (default: backup.py from the bot data directory)')
+    mode_selection.add_argument('-l', '--list', action='store_true', help='list all available backends')
+    mode_selection.add_argument('--new-plugin', nargs='?', default=None, const='current_dir',
+                                help='create a new plugin in the specified directory')
+    mode_selection.add_argument('-T', '--text', dest="backend", action='store_const', const="Text",
+                                help='force local text backend')
+    mode_selection.add_argument('-G', '--graphic', dest="backend", action='store_const', const="Graphic",
+                                help='force local graphical backend')
 
     if not ON_WINDOWS:
-        option_group = parser.add_argument_group('arguments to run it as a Daemon')
+        option_group = parser.add_argument_group('optional daemonization arguments')
         option_group.add_argument('-d', '--daemon', action='store_true', help='Detach the process from the console')
         option_group.add_argument('-p', '--pidfile', default=None,
                                   help='Specify the pid file for the daemon (default: current bot data directory)')
 
     args = vars(parser.parse_args())  # create a dictionary of args
+
+    # This must come BEFORE the config is loaded below, to avoid printing
+    # logs as a side effect of config loading.
+    if args['new_plugin']:
+        directory = os.getcwd() if args['new_plugin'] == "current_dir" else args['new_plugin']
+        for handler in logging.getLogger().handlers:
+            logger.removeHandler(handler)
+        try:
+            new_plugin_wizard(directory)
+        except KeyboardInterrupt:
+            sys.exit(1)
+        except Exception as e:
+            sys.stderr.write(str(e) + "\n")
+            sys.exit(1)
+        finally:
+            sys.exit(0)
+
     config_path = args['config']
     # setup the environment to be able to import the config.py
     if config_path:
@@ -189,34 +210,15 @@ def main():
             print('\t\t%s' % backend_name)
         sys.exit(0)
 
-    # this is temporary until the modes are removed to translate the mode names to backend names
-    classic_vs_plugin_names = {'text': 'Text',
-                               'graphic': 'Graphic',
-                               'hipchat': 'Hipchat',
-                               'irc': 'IRC',
-                               'xmpp': 'XMPP',
-                               'slack': 'Slack',
-                               'null': 'Null'}
-
-    filtered_mode = [mname for mname in classic_vs_plugin_names.keys() if args[mname]]
     if args['restore']:
         backend = 'Null'  # we don't want any backend when we restore
-    elif filtered_mode:
-        backend = classic_vs_plugin_names[filtered_mode[0]]
-        if backend != 'Text':
-            log.warn("""Deprecation notice:
-            Please add BACKEND='%s' to your config.py instead of using the '--%s' command line parameter.
-            The backend command line parameters will be removed on the next version of Err.
-            """ % (backend, filtered_mode[0]))
-    elif hasattr(config, 'BACKEND'):
+    elif args['backend'] is None:
+        if not hasattr(config, 'BACKEND'):
+            log.fatal("The BACKEND configuration option is missing in config.py")
+            sys.exit(1)
         backend = config.BACKEND
     else:
-        log.warn("""Deprecation notice:
-        Err is defaulting to XMPP because you did not specify any backend.
-        Please add BACKEND='XMPP' to your config.py if you really want that.
-        This behaviour will be removed on the next version of Err.
-        """)
-        backend = 'XMPP'  # default value
+        backend = args['backend']
 
     log.info("Selected backend '%s'." % backend)
 
@@ -230,7 +232,7 @@ def main():
         raise Exception("The data directory '%s' should be writable for the bot" % config.BOT_DATA_DIR)
 
     if (not ON_WINDOWS) and args['daemon']:
-        if args['text']:
+        if args['backend'] == "Text":
             raise Exception('You cannot run in text and daemon mode at the same time')
         if args['restore']:
             raise Exception('You cannot restore a backup in daemon mode.')
@@ -245,7 +247,8 @@ def main():
                 from errbot.main import main
                 main(backend, logger, config)
 
-            daemon = Daemonize(app="err", pid=pid, action=action)
+            daemon = Daemonize(app="err", pid=pid, action=action, chdir=os.getcwd())
+            log.info("Daemonizing")
             daemon.start()
         except Exception:
             log.exception('Failed to daemonize the process')

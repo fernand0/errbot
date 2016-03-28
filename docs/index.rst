@@ -100,17 +100,9 @@ User guide
   user_guide/setup
   user_guide/interaction
   user_guide/plugin_development/index
-  user_guide/sentry
   user_guide/backend_development/index
-
-
-API documentation
------------------
-
-.. toctree::
-  :maxdepth: 3
-
-  errbot
+  user_guide/storage_development/index
+  user_guide/sentry
 
 
 Getting involved
@@ -120,6 +112,15 @@ Getting involved
   :maxdepth: 3
 
   contributing
+
+
+API documentation
+-----------------
+
+.. toctree::
+  :maxdepth: 3
+
+  errbot
 
 
 Release history

@@ -1,4 +1,3 @@
-from uuid import uuid4
 import logging
 
 from errbot import BotPlugin, botcmd, SeparatorArgParser, ShlexArgParser
@@ -33,19 +32,16 @@ class ChatRoom(BotPlugin):
                     self.log.exception("Joining room %s failed", repr(room))
 
     def _join_room(self, room):
-        room_name = compat_str(room)
-        if room_name is not None:
-            room, username, password = (room_name, self.bot_config.CHATROOM_FN, None)
+        if isinstance(room, (tuple, list)):
+            room_name = compat_str(room[0])
+            room_password = compat_str(room[1])
+            room, username, password = (room_name, self.bot_config.CHATROOM_FN, room_password)
+            self.log.info("Joining room {} with username {} and password".format(room, username))
         else:
-            room, username, password = (room[0], self.bot_config.CHATROOM_FN, room[1])
-        self.log.info("Joining room {} with username {}".format(room, username))
-        try:
+            room_name = compat_str(room)
+            room, username, password = (room_name, self.bot_config.CHATROOM_FN, None)
+            self.log.info("Joining room {} with username {}".format(room, username))
             self.query_room(room).join(username=self.bot_config.CHATROOM_FN, password=password)
-        except NotImplementedError:
-            # Backward compatibility for backends which do not yet have a
-            # query_room implementation and still have a join_room method.
-            logging.warning("query_room not implemented on this backend, using legacy join_room instead")
-            self.join_room(room, username=username, password=password)
 
     def deactivate(self):
         self.connected = False
@@ -64,18 +60,10 @@ class ChatRoom(BotPlugin):
 
         Examples (IRC):
         !room create #example-room
-
-        Example (TOX): (no room name at creation)
-        !room create
         """
-        if self.mode == 'tox':
-            if len(args) != 0:
-                return "You cannot specify a chatgroup name on TOX."
-            room = self.query_room(None)
-        else:
-            if len(args) < 1:
-                return "Please tell me which chatroom to create."
-            room = self.query_room(args[0])
+        if len(args) < 1:
+            return "Please tell me which chatroom to create."
+        room = self.query_room(args[0])
         room.create()
         return "Created the room {}".format(room)
 
@@ -242,18 +230,18 @@ class ChatRoom(BotPlugin):
 
     def callback_message(self, mess):
         try:
-            mess_type = mess.type
-            if mess_type == 'chat':
+            if mess.is_direct:
                 username = mess.frm.person
                 if username in self.bot_config.CHATROOM_RELAY:
                     self.log.debug('Message to relay from %s.' % username)
                     body = mess.body
                     rooms = self.bot_config.CHATROOM_RELAY[username]
-                    for room in rooms:
-                        self.send(room, body, message_type='groupchat')
-            elif mess_type == 'groupchat':
+                    for roomstr in rooms:
+                        room = self.room_join(roomstr)
+                        self.send(room, body)
+            elif mess.is_group:
                 fr = mess.frm
-                chat_room = fr.room
+                chat_room = str(fr.room)
                 if chat_room in self.bot_config.REVERSE_CHATROOM_RELAY:
                     users_to_relay_to = self.bot_config.REVERSE_CHATROOM_RELAY[chat_room]
                     self.log.debug('Message to relay to %s.' % users_to_relay_to)

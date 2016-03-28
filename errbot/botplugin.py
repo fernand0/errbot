@@ -1,14 +1,13 @@
 import logging
-import os
 import shlex
 from threading import Timer, current_thread
 from types import ModuleType
-from typing import Tuple, Callable, Mapping, Any, Sequence
+from typing import Tuple, Callable, Mapping, Sequence, Union
 from io import IOBase
 
-from .utils import PLUGINS_SUBDIR, recurse_check_structure
+from .utils import recurse_check_structure
 from .storage import StoreMixin, StoreNotOpenError
-from errbot.backends.base import Message, Presence, Stream, MUCRoom, Identifier, ONLINE
+from errbot.backends.base import Message, Presence, Stream, Room, Identifier, ONLINE
 
 log = logging.getLogger(__name__)
 
@@ -33,7 +32,7 @@ class BotPluginBase(StoreMixin):
         """ This should be eventually moved back to __init__ once plugin will forward correctly their params.
         """
         self._bot = bot
-        self.plugin_dir = bot.plugin_dir
+        self.plugin_dir = bot.repo_manager.plugin_dir
 
     @property
     def mode(self) -> str:
@@ -48,7 +47,7 @@ class BotPluginBase(StoreMixin):
     def bot_config(self) -> ModuleType:
         """
         Get the bot configuration from config.py.
-        For exemple you can access:
+        For example you can access:
         self.bot_config.BOT_DATA_DIR
         """
         # if BOT_ADMINS is just an unique string make it a tuple for backwards
@@ -69,9 +68,7 @@ class BotPluginBase(StoreMixin):
     def init_storage(self) -> None:
         classname = self.__class__.__name__
         log.debug('Init storage for %s' % classname)
-        filename = os.path.join(self.bot_config.BOT_DATA_DIR, PLUGINS_SUBDIR, classname + '.db')
-        log.debug('Loading %s' % filename)
-        self.open_storage(filename)
+        self.open_storage(self._bot.storage_plugin, classname)
 
     def activate(self) -> None:
         """
@@ -172,29 +169,6 @@ class BotPluginBase(StoreMixin):
 
 # noinspection PyAbstractClass
 class BotPlugin(BotPluginBase):
-    @property
-    def min_err_version(self) -> str:
-        """
-        DEPRECATED: see :doc:`/user_guide/plugin_development/plugin_compatibility_settings.html`
-        If your plugin has a minimum version of err it needs to be on in order to run,
-        please override accordingly this method, returning a string with the dotted
-        minimum version. It MUST be in a 3 dotted numbers format or None
-
-        For example: "1.2.2"
-        """
-        return None
-
-    @property
-    def max_err_version(self) -> str:
-        """
-        DEPRECATED: see :doc:`/user_guide/plugin_development/plugin_compatibility_settings.html`
-        If your plugin has a maximal version of err it needs to be on in order to run,
-        please override accordingly this method, returning a string with the dotted
-        maximal version. It MUST be in a 3 dotted numbers format or None
-
-        For example: "1.2.2"
-        """
-        return None
 
     def get_configuration_template(self) -> Mapping:
         """
@@ -222,6 +196,7 @@ class BotPlugin(BotPluginBase):
            same type of first element of the template (no mix typed is supported)
 
         In case of validation error it should raise a errbot.utils.ValidationException
+
         :param configuration: the configuration to be checked.
         """
         recurse_check_structure(self.get_configuration_template(), configuration)  # default behavior
@@ -234,6 +209,7 @@ class BotPlugin(BotPluginBase):
 
         This method will be called before activation so don't expect to be activated
         at that point.
+
         :param configuration: injected configuration for the plugin.
         """
         self.config = configuration
@@ -306,6 +282,7 @@ class BotPlugin(BotPluginBase):
             You can block this call until you are done with the stream.
             To signal that you accept / reject the file, simply call stream.accept()
             or stream.reject() and return.
+
             :param stream:
                 the incoming stream request.
         """
@@ -324,7 +301,7 @@ class BotPlugin(BotPluginBase):
         """
         pass
 
-    def callback_room_joined(self, room: MUCRoom):
+    def callback_room_joined(self, room: Room):
         """
             Triggered when the bot has joined a MUC.
 
@@ -334,7 +311,7 @@ class BotPlugin(BotPluginBase):
         """
         pass
 
-    def callback_room_left(self, room: MUCRoom):
+    def callback_room_left(self, room: Room):
         """
             Triggered when the bot has left a MUC.
 
@@ -344,7 +321,7 @@ class BotPlugin(BotPluginBase):
         """
         pass
 
-    def callback_room_topic(self, room: MUCRoom):
+    def callback_room_topic(self, room: Room):
         """
             Triggered when the topic in a MUC changes.
 
@@ -365,21 +342,26 @@ class BotPlugin(BotPluginBase):
         self._bot.warn_admins(warning)
 
     def send(self,
-             user: object,
+             identifier: Identifier,
              text: str,
              in_reply_to: Message=None,
-             message_type: str='chat',
+             message_type: str=None,
              groupchat_nick_reply: bool=False) -> None:
         """
-            Sends asynchronously a message to a room or a user.
-             if it is a room message_type needs to by 'groupchat' and user the room.
-             :param groupchat_nick_reply: if True it will mention the user in the chatroom.
-             :param message_type: 'chat' or 'groupchat'
-             :param in_reply_to: optionally, the original message this message is the answer to.
-             :param text: markdown formatted text to send to the user.
-             :param user: identifier of the user to which you want to send a message to. see build_identifier.
+            Send a message to a room or a user.
+
+            :param groupchat_nick_reply: if True the message will mention the user in the chatroom.
+            :param message_type: this parameter is deprecated and will be removed in a future version.
+            :param in_reply_to: the original message this message is a reply to (optional).
+            :param text: markdown formatted text to send to the user.
+            :param identifier: An Identifier representing the user or room to message.
+                               Identifiers may be created with :func:`build_identifier`.
         """
-        return self._bot.send(user, text, in_reply_to, message_type, groupchat_nick_reply)
+        if not isinstance(identifier, Identifier):
+            raise ValueError("identifier needs to be of type Identifier, the old string behavior is not supported")
+        if message_type is not None:
+            self.log.warn("send message_type is DEPRECATED. Either pass a user identifier or a room to send.")
+        return self._bot.send(identifier, text, in_reply_to, groupchat_nick_reply)
 
     def change_presence(self, status: str = ONLINE, message: str = '') -> None:
         """
@@ -392,32 +374,35 @@ class BotPlugin(BotPluginBase):
         self._bot.change_presence(status, message)
 
     def send_templated(self,
-                       user: Identifier,
+                       identifier: Identifier,
                        template_name: str,
                        template_parameters: Mapping,
                        in_reply_to: Message=None,
-                       message_type: str='chat',
+                       message_type: str=None,
                        groupchat_nick_reply: bool=False) -> None:
         """
             Sends asynchronously a message to a room or a user.
             Same as send but passing a template name and parameters instead of directly the markdown text.
              if it is a room message_type needs to by 'groupchat' and user the room.
+
              :param template_parameters: arguments for the template.
              :param template_name: name of the template to use.
              :param groupchat_nick_reply: if True it will mention the user in the chatroom.
-             :param message_type: 'chat' or 'groupchat'
+             :param message_type: DEPRECATED
              :param in_reply_to: optionally, the original message this message is the answer to.
              :param text: markdown formatted text to send to the user.
-             :param user: identifier of the user to which you want to send a message to. see build_identifier.
+             :param identifier: identifier of the user or room to which you want to send a message to.
         """
-        return self._bot.send_templated(user, template_name, template_parameters, in_reply_to, message_type,
+        return self._bot.send_templated(identifier, template_name, template_parameters, in_reply_to, message_type,
                                         groupchat_nick_reply)
 
-    def build_identifier(self, txtrep: str):
+    def build_identifier(self, txtrep: str) -> Identifier:
         """
-           Transform a textual representation of a user or room identifier to the correct
+           Transform a textual representation of a user identifier to the correct
            Identifier object you can set in Message.to and Message.frm.
+
            :param txtrep: the textual representation of the identifier (it is backend dependent).
+           :return: a user identifier.
         """
         return self._bot.build_identifier(txtrep)
 
@@ -429,6 +414,7 @@ class BotPlugin(BotPluginBase):
                             stream_type: str=None):
         """
             Sends asynchronously a stream/file to a user.
+
             :param user: is the identifier of the person you want to send it to.
             :param fsource: is a file object you want to send.
             :param name: is an optional filename for it.
@@ -439,26 +425,13 @@ class BotPlugin(BotPluginBase):
         """
         return self._bot.send_stream_request(user, fsource, name, size, stream_type)
 
-    def join_room(self, room: str, username: str=None, password: str=None):
-        """
-        Join a room (MUC).
-
-        :param room:
-            The JID/identifier of the room to join.
-        :param username:
-            An optional username to use.
-        :param password:
-            An optional password to use (for password-protected rooms).
-        """
-        return self._bot.join_room(room, username, password)
-
-    def rooms(self) -> Sequence[MUCRoom]:
+    def rooms(self) -> Sequence[Room]:
         """
         The list of rooms the bot is currently in.
         """
         return self._bot.rooms()
 
-    def query_room(self, room: str) -> MUCRoom:
+    def query_room(self, room: str) -> Room:
         """
         Query a room for information.
 
@@ -470,12 +443,6 @@ class BotPlugin(BotPluginBase):
             :class:`~errbot.backends.base.RoomDoesNotExistError` if the room doesn't exist.
         """
         return self._bot.query_room(room=room)
-
-    def get_installed_plugin_repos(self) -> Mapping:
-        """
-            Get the current installed plugin repos in a dictionary of name / url
-        """
-        return self._bot.get_installed_plugin_repos()
 
     def start_poller(self,
                      interval: float,
@@ -489,6 +456,7 @@ class BotPlugin(BotPluginBase):
             Also, you can program
             for example : self.program_poller(self, 30, fetch_stuff)
             where you have def fetch_stuff(self) in your plugin
+
             :param kwargs: kwargs for the method to callback.
             :param args: args for the method to callback.
             :param method: method to callback.
@@ -506,6 +474,7 @@ class BotPlugin(BotPluginBase):
 
             If the method equals None -> it stops all the pollers
             you need to regive the same parameters as the original start_poller to match a specific poller to stop
+
             :param kwargs: The initial kwargs you gave to start_poller.
             :param args: The initial args you gave to start_poller.
             :param method: The initial method you passed to start_poller.
@@ -528,6 +497,7 @@ class ArgParserBase(object):
 
         If splitting fails for any reason it should return an exception
         of some kind.
+
         :param args: string to parse
         """
         raise NotImplementedError()

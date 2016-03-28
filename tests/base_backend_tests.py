@@ -5,33 +5,51 @@ from tempfile import mkdtemp
 from os.path import sep
 from errbot.errBot import bot_config_defaults
 
-
 import unittest  # noqa
 import os  # noqa
 import re  # noqa
+from collections import OrderedDict
 from queue import Queue, Empty  # noqa
-from mock import patch  # noqa
 from errbot.errBot import ErrBot
-from errbot.backends.base import Backend, Message, MUCRoom, Identifier, ONLINE
-from errbot.backends.test import TestIdentifier, TestMUCOccupant
+from errbot.backends.base import Message, Room, Identifier, ONLINE
+from errbot.backends.test import TestPerson, TestOccupant, TestRoom
 from errbot import botcmd, re_botcmd, arg_botcmd, templating  # noqa
+from errbot.main import CORE_STORAGE
+from errbot.plugin_manager import BotPluginManager
 from errbot.rendering import text
 from errbot.core_plugins.acls import ACLS
+from errbot.repo_manager import BotRepoManager
+from errbot.specific_plugin_manager import SpecificPluginManager
+from errbot.storage.base import StoragePluginBase
+from errbot.utils import PLUGINS_SUBDIR
 
 LONG_TEXT_STRING = "This is a relatively long line of output, but I am repeated multiple times.\n"
 
 logging.basicConfig(level=logging.DEBUG)
 
+SIMPLE_JSON_PLUGINS_INDEX = """
+{"errbotio/err-helloworld":
+    {"HelloWorld":
+        {"path": "/helloWorld.plug",
+         "documentation": "let's say hello !",
+         "avatar_url": "https://avatars.githubusercontent.com/u/15802630?v=3",
+         "name": "HelloWorld",
+         "python": "2+",
+         "repo": "https://github.com/errbotio/err-helloworld"
+         }
+    }
+}
+"""
+
 
 class DummyBackend(ErrBot):
-
     def change_presence(self, status: str = ONLINE, message: str = '') -> None:
         pass
 
     def prefix_groupchat_reply(self, message: Message, identifier: Identifier):
         pass
 
-    def query_room(self, room: str) -> MUCRoom:
+    def query_room(self, room: str) -> Room:
         pass
 
     def __init__(self, extra_config=None):
@@ -47,6 +65,7 @@ class DummyBackend(ErrBot):
         bot_config_defaults(config)
         config.BOT_DATA_DIR = tempdir
         config.BOT_LOG_FILE = tempdir + sep + 'log.txt'
+        config.BOT_PLUGIN_INDEXES = tempdir + sep + 'repos.json'
         config.BOT_EXTRA_PLUGIN_DIR = []
         config.BOT_LOG_LEVEL = logging.DEBUG
         config.BOT_IDENTITY = {'username': 'err@localhost'}
@@ -54,16 +73,42 @@ class DummyBackend(ErrBot):
         config.BOT_PREFIX = '!'
         config.CHATROOM_FN = 'blah'
 
+        # Writeout the made up repos file
+        with open(config.BOT_PLUGIN_INDEXES, "w") as index_file:
+            index_file.write(SIMPLE_JSON_PLUGINS_INDEX)
+
         for key in extra_config:
             setattr(config, key, extra_config[key])
         super().__init__(config)
         self.bot_identifier = self.build_identifier('err')
-        self.inject_commands_from(self)
-        self.inject_command_filters_from(ACLS(self))
         self.md = text()  # We just want simple text for testing purposes
 
+        # setup a memory based storage
+        spm = SpecificPluginManager(config, 'storage', StoragePluginBase, CORE_STORAGE, None)
+        storage_plugin = spm.get_plugin_by_name('Memory')
+
+        # setup the plugin_manager just internally
+        botplugins_dir = os.path.join(config.BOT_DATA_DIR, PLUGINS_SUBDIR)
+        if not os.path.exists(botplugins_dir):
+            os.makedirs(botplugins_dir, mode=0o755)
+
+        # get it back from where we publish it.
+        repo_index_paths = (os.path.join(os.path.dirname(__file__), '..', 'docs', '_extra', 'repos.json'),)
+        repo_manager = BotRepoManager(storage_plugin,
+                                      botplugins_dir,
+                                      repo_index_paths)
+        self.attach_storage_plugin(storage_plugin)
+        self.attach_repo_manager(repo_manager)
+        self.attach_plugin_manager(BotPluginManager(storage_plugin,
+                                                    repo_manager,
+                                                    config.BOT_EXTRA_PLUGIN_DIR,
+                                                    config.AUTOINSTALL_DEPS,
+                                                    getattr(config, 'CORE_PLUGINS', None)))
+        self.inject_commands_from(self)
+        self.inject_command_filters_from(ACLS(self))
+
     def build_identifier(self, text_representation):
-        return TestIdentifier(text_representation)
+        return TestPerson(text_representation)
 
     def build_reply(self, mess, text=None, private=False):
         msg = self.build_message(text)
@@ -81,6 +126,10 @@ class DummyBackend(ErrBot):
     @botcmd
     def command(self, mess, args):
         return "Regular command"
+
+    @botcmd(admin_only=True)
+    def admin_command(self, mess, args):
+        return "Admin command"
 
     @re_botcmd(pattern=r'^regex command with prefix$', prefixed=True)
     def regex_command_with_prefix(self, mess, match):
@@ -301,7 +350,7 @@ class BotCmds(unittest.TestCase):
     def setUp(self):
         self.dummy = DummyBackend()
 
-    def makemessage(self, message, from_=None, to=None, type="chat"):
+    def makemessage(self, message, from_=None, to=None):
         if not from_:
             from_ = self.dummy.build_identifier("noterr")
         if not to:
@@ -309,7 +358,6 @@ class BotCmds(unittest.TestCase):
         m = self.dummy.build_message(message)
         m.frm = from_
         m.to = to
-        m.type = type
         return m
 
     def test_inject_skips_methods_without_botcmd_decorator(self):
@@ -336,14 +384,15 @@ class BotCmds(unittest.TestCase):
         self.assertEquals("one two", self.dummy.pop_message().body)
 
         # Groupchat should still require the prefix
-        m.type = "groupchat"
-        m.frm = TestMUCOccupant("someone", "room")
+        m.frm = TestOccupant("someone", "room")
+        room = TestRoom("room", bot=self.dummy)
+        m.to = room
         self.dummy.callback_message(m)
         self.assertRaises(Empty, self.dummy.pop_message, *[], **{'block': False})
 
         m = self.makemessage("!return_args_as_str one two",
-                             from_=TestMUCOccupant("someone", "room"),
-                             type="groupchat")
+                             from_=TestOccupant("someone", "room"),
+                             to=room)
         self.dummy.callback_message(m)
         self.assertEquals("one two", self.dummy.pop_message().body)
 
@@ -364,7 +413,7 @@ class BotCmds(unittest.TestCase):
         self.dummy.callback_message(self.makemessage("regex command with capture group: Captured text"))
         self.assertEquals("Captured text", self.dummy.pop_message().body)
         self.dummy.callback_message(self.makemessage(
-            "This command also allows extra text in front - regex command with capture group: Captured text"))
+                "This command also allows extra text in front - regex command with capture group: Captured text"))
         self.assertEquals("Captured text", self.dummy.pop_message().body)
 
     def test_callback_message_with_re_botcmd_and_alt_prefixes(self):
@@ -382,12 +431,12 @@ class BotCmds(unittest.TestCase):
         self.dummy.callback_message(self.makemessage("regex command with capture group: Captured text"))
         self.assertEquals("Captured text", self.dummy.pop_message().body)
         self.dummy.callback_message(self.makemessage(
-            "This command also allows extra text in front - regex command with capture group: Captured text"))
+                "This command also allows extra text in front - regex command with capture group: Captured text"))
         self.assertEquals("Captured text", self.dummy.pop_message().body)
         self.dummy.callback_message(self.makemessage("Err, regex command with capture group: Captured text"))
         self.assertEquals("Captured text", self.dummy.pop_message().body)
         self.dummy.callback_message(self.makemessage(
-            "Err This command also allows extra text in front - regex command with capture group: Captured text"))
+                "Err This command also allows extra text in front - regex command with capture group: Captured text"))
         self.assertEquals("Captured text", self.dummy.pop_message().body)
         self.dummy.callback_message(self.makemessage("!match_here"))
         self.assertEquals("1", self.dummy.pop_message().body)
@@ -408,7 +457,8 @@ class BotCmds(unittest.TestCase):
         first_name = 'Err'
         last_name = 'Bot'
         self.dummy.callback_message(
-            self.makemessage("!returns_first_name_last_name --first-name=%s --last-name=%s" % (first_name, last_name))
+                self.makemessage(
+                        "!returns_first_name_last_name --first-name=%s --last-name=%s" % (first_name, last_name))
         )
         self.assertEquals("%s %s" % (first_name, last_name), self.dummy.pop_message().body)
 
@@ -416,7 +466,8 @@ class BotCmds(unittest.TestCase):
         first_name = 'Err'
         last_name = 'Bot'
         self.dummy.callback_message(
-            self.makemessage("!yields_first_name_last_name --first-name=%s --last-name=%s" % (first_name, last_name))
+                self.makemessage(
+                        "!yields_first_name_last_name --first-name=%s --last-name=%s" % (first_name, last_name))
         )
         self.assertEquals("%s %s" % (first_name, last_name), self.dummy.pop_message().body)
 
@@ -424,7 +475,7 @@ class BotCmds(unittest.TestCase):
         value = "Foo"
         count = 5
         self.dummy.callback_message(
-            self.makemessage("!returns_value_repeated_count_times %s --count %s" % (value, count))
+                self.makemessage("!returns_value_repeated_count_times %s --count %s" % (value, count))
         )
         self.assertEquals(value * count, self.dummy.pop_message().body)
 
@@ -434,22 +485,22 @@ class BotCmds(unittest.TestCase):
     def test_arg_botcdm_returns_errors_as_chat(self):
         self.dummy.callback_message(self.makemessage("!returns_first_name_last_name --invalid-parameter"))
         self.assertIn(
-            "I'm sorry, I couldn't parse that; unrecognized arguments: --invalid-parameter",
-            self.dummy.pop_message().body
+                "I'm sorry, I couldn't parse that; unrecognized arguments: --invalid-parameter",
+                self.dummy.pop_message().body
         )
 
     def test_arg_botcmd_returns_help_message_as_chat(self):
         self.dummy.callback_message(self.makemessage("!returns_first_name_last_name --help"))
         self.assertIn(
-            "usage: returns_first_name_last_name [-h] [--last-name LAST_NAME]",
-            self.dummy.pop_message().body
+                "usage: returns_first_name_last_name [-h] [--last-name LAST_NAME]",
+                self.dummy.pop_message().body
         )
 
     def test_arg_botcmd_undoes_fancy_unicode_dash_conversion(self):
         first_name = 'Err'
         last_name = 'Bot'
         self.dummy.callback_message(
-            self.makemessage("!returns_first_name_last_name —first-name=%s —last-name=%s" % (first_name, last_name))
+                self.makemessage("!returns_first_name_last_name —first-name=%s —last-name=%s" % (first_name, last_name))
         )
         self.assertEquals("%s %s" % (first_name, last_name), self.dummy.pop_message().body)
 
@@ -457,90 +508,207 @@ class BotCmds(unittest.TestCase):
         first_name = 'Err'
         last_name = 'Bot'
         self.dummy.callback_message(
-            self.makemessage("!returns_first_name_last_name_without_unpacking --first-name=%s --last-name=%s"
-                             % (first_name, last_name))
+                self.makemessage("!returns_first_name_last_name_without_unpacking --first-name=%s --last-name=%s"
+                                 % (first_name, last_name))
         )
         self.assertEquals("%s %s" % (first_name, last_name), self.dummy.pop_message().body)
 
     def test_access_controls(self):
+        testroom = TestRoom("room", bot=self.dummy)
         tests = [
+            # BOT_ADMINS scenarios
             dict(
-                message=self.makemessage("!command"),
-                acl={},
-                acl_default={},
+                message=self.makemessage("!admin_command"),
+                bot_admins=('noterr'),
+                expected_response="Admin command",
+            ),
+            dict(
+                message=self.makemessage("!admin_command"),
+                bot_admins=(),
+                expected_response="This command requires bot-admin privileges",
+            ),
+            dict(
+                message=self.makemessage("!admin_command"),
+                bot_admins=('*err'),
+                expected_response="Admin command",
+            ),
+
+            # admin_only commands SHOULD be private-message only by default
+            dict(
+                message=self.makemessage("!admin_command",
+                                         from_=TestOccupant('noterr', room=testroom),
+                                         to=testroom),
+                bot_admins=('noterr'),
+                expected_response="This command may only be issued through a direct message",
+            ),
+            # But MAY be sent via groupchat IF 'allowmuc' is specifically set to True.
+            dict(
+                message=self.makemessage("!admin_command",
+                                         from_=TestOccupant('noterr', room=testroom),
+                                         to=testroom),
+                bot_admins=('noterr'),
+                acl={'admin_command': {'allowmuc': True}},
+                expected_response="Admin command",
+            ),
+
+            # ACCESS_CONTROLS scenarios WITHOUT wildcards (<4.0 format)
+            dict(
+                    message=self.makemessage("!command"),
+                    expected_response="Regular command"
+            ),
+            dict(
+                    message=self.makemessage("!regex command with prefix"),
+                    expected_response="Regex command"
+            ),
+            dict(
+                    message=self.makemessage("!command"),
+                    acl_default={'allowmuc': False, 'allowprivate': False},
+                    expected_response="You're not allowed to access this command via private message to me"
+            ),
+            dict(
+                    message=self.makemessage("regex command without prefix"),
+                    acl_default={'allowmuc': False, 'allowprivate': False},
+                    expected_response="You're not allowed to access this command via private message to me"
+            ),
+            dict(
+                    message=self.makemessage("!command"),
+                    acl_default={'allowmuc': True, 'allowprivate': False},
+                    expected_response="You're not allowed to access this command via private message to me"
+            ),
+            dict(
+                    message=self.makemessage("!command"),
+                    acl_default={'allowmuc': False, 'allowprivate': True},
+                    expected_response="Regular command"
+            ),
+            dict(
+                    message=self.makemessage("!command"),
+                    acl={'command': {'allowprivate': False}},
+                    acl_default={'allowmuc': False, 'allowprivate': True},
+                    expected_response="You're not allowed to access this command via private message to me"
+            ),
+            dict(
+                    message=self.makemessage("!command"),
+                    acl={'command': {'allowmuc': True}},
+                    acl_default={'allowmuc': True, 'allowprivate': False},
+                    expected_response="You're not allowed to access this command via private message to me"
+            ),
+            dict(
+                    message=self.makemessage("!command"),
+                    acl={'command': {'allowprivate': True}},
+                    acl_default={'allowmuc': False, 'allowprivate': False},
+                    expected_response="Regular command"
+            ),
+            dict(
+                    message=self.makemessage("!command",
+                                             from_=TestOccupant("someone", "room"),
+                                             to=TestRoom("room", bot=self.dummy)),
+                    acl={'command': {'allowrooms': ('room',)}},
+                    expected_response="Regular command"
+            ),
+            dict(
+                message=self.makemessage("!command",
+                                         from_=TestOccupant("someone", "room_1"),
+                                         to=TestRoom("room1", bot=self.dummy)),
+                acl={'command': {'allowrooms': ('room_*',)}},
                 expected_response="Regular command"
             ),
             dict(
-                message=self.makemessage("!regex command with prefix"),
-                acl={},
-                acl_default={},
-                expected_response="Regex command"
+                    message=self.makemessage("!command",
+                                             from_=TestOccupant("someone", "room"),
+                                             to=TestRoom("room", bot=self.dummy)),
+                    acl={'command': {'allowrooms': ('anotherroom@localhost',)}},
+                    expected_response="You're not allowed to access this command from this room",
             ),
             dict(
-                message=self.makemessage("!command"),
-                acl={},
-                acl_default={'allowmuc': False, 'allowprivate': False},
-                expected_response="You're not allowed to access this command via private message to me"
+                    message=self.makemessage("!command",
+                                             from_=TestOccupant("someone", "room"),
+                                             to=TestRoom("room", bot=self.dummy)),
+                    acl={'command': {'denyrooms': ('room',)}},
+                    expected_response="You're not allowed to access this command from this room",
             ),
             dict(
-                message=self.makemessage("regex command without prefix"),
-                acl={},
-                acl_default={'allowmuc': False, 'allowprivate': False},
-                expected_response="You're not allowed to access this command via private message to me"
-            ),
-            dict(
-                message=self.makemessage("!command"),
-                acl={},
-                acl_default={'allowmuc': True, 'allowprivate': False},
-                expected_response="You're not allowed to access this command via private message to me"
-            ),
-            dict(
-                message=self.makemessage("!command"),
-                acl={},
-                acl_default={'allowmuc': False, 'allowprivate': True},
-                expected_response="Regular command"
-            ),
-            dict(
-                message=self.makemessage("!command"),
-                acl={'command': {'allowprivate': True}},
-                acl_default={'allowmuc': False, 'allowprivate': False},
-                expected_response="Regular command"
-            ),
-            dict(
-                message=self.makemessage("!command", type="groupchat", from_=TestMUCOccupant("someone", "room")),
-                acl={'command': {'allowrooms': ('room',)}},
-                acl_default={},
-                expected_response="Regular command"
-            ),
-            dict(
-                message=self.makemessage("!command", type="groupchat", from_=TestMUCOccupant("someone", "room")),
-                acl={'command': {'allowrooms': ('anotherroom@localhost',)}},
-                acl_default={},
+                message=self.makemessage("!command",
+                                         from_=TestOccupant("someone", "room"),
+                                         to=TestRoom("room", bot=self.dummy)),
+                acl={'command': {'denyrooms': ('*',)}},
                 expected_response="You're not allowed to access this command from this room",
             ),
             dict(
-                message=self.makemessage("!command", type="groupchat", from_=TestMUCOccupant("someone", "room")),
-                acl={'command': {'denyrooms': ('room',)}},
-                acl_default={},
-                expected_response="You're not allowed to access this command from this room",
+                    message=self.makemessage("!command",
+                                             from_=TestOccupant("someone", "room"),
+                                             to=TestRoom("room", bot=self.dummy)),
+                    acl={'command': {'denyrooms': ('anotherroom',)}},
+                    expected_response="Regular command"
             ),
             dict(
-                message=self.makemessage("!command", type="groupchat", from_=TestMUCOccupant("someone", "room")),
-                acl={'command': {'denyrooms': ('anotherroom',)}},
-                acl_default={},
+                message=self.makemessage("!command"),
+                acl={'command': {'allowusers': ('noterr',)}},
                 expected_response="Regular command"
+            ),
+            dict(
+                message=self.makemessage("!command"),
+                acl={'command': {'allowusers': ('err',)}},
+                expected_response="You're not allowed to access this command from this user",
+            ),
+            dict(
+                message=self.makemessage("!command"),
+                acl={'command': {'allowusers': ('*err',)}},
+                expected_response="Regular command"
+            ),
+            dict(
+                message=self.makemessage("!command"),
+                acl={'command': {'denyusers': ('err',)}},
+                expected_response="Regular command"
+            ),
+            dict(
+                message=self.makemessage("!command"),
+                acl={'command': {'denyusers': ('noterr',)}},
+                expected_response="You're not allowed to access this command from this user"
+            ),
+            dict(
+                message=self.makemessage("!command"),
+                acl={'command': {'denyusers': ('*err',)}},
+                expected_response="You're not allowed to access this command from this user"
+            ),
+
+            # ACCESS_CONTROLS scenarios WITH wildcards (>=4.0 format)
+            dict(
+                message=self.makemessage("!command"),
+                acl={'DummyBackend:command': {'denyusers': ('noterr',)}},
+                expected_response="You're not allowed to access this command from this user"
+            ),
+            dict(
+                message=self.makemessage("!command"),
+                acl={'*:command': {'denyusers': ('noterr',)}},
+                expected_response="You're not allowed to access this command from this user"
+            ),
+            dict(
+                message=self.makemessage("!command"),
+                acl={'DummyBackend:*': {'denyusers': ('noterr',)}},
+                expected_response="You're not allowed to access this command from this user"
+            ),
+            # Overlapping globs should use first match
+            dict(
+                message=self.makemessage("!command"),
+                acl=OrderedDict([
+                    ('DummyBackend:*', {'denyusers': ('noterr',)}),
+                    ('DummyBackend:command', {'denyusers': ()})
+                ]),
+                expected_response="You're not allowed to access this command from this user"
             ),
         ]
 
         for test in tests:
-            self.dummy.bot_config.ACCESS_CONTROLS_DEFAULT = test['acl_default']
-            self.dummy.bot_config.ACCESS_CONTROLS = test['acl']
+            self.dummy.bot_config.ACCESS_CONTROLS_DEFAULT = test.get('acl_default', {})
+            self.dummy.bot_config.ACCESS_CONTROLS = test.get('acl', {})
+            self.dummy.bot_config.BOT_ADMINS = test.get('bot_admins', ())
             logger = logging.getLogger(__name__)
             logger.info("** message: {}".format(test['message'].body))
-            logger.info("** acl: {!r}".format(test['acl']))
-            logger.info("** acl_default: {!r}".format(test['acl_default']))
+            logger.info("** bot_admins: {}".format(self.dummy.bot_config.BOT_ADMINS))
+            logger.info("** acl: {!r}".format(self.dummy.bot_config.ACCESS_CONTROLS))
+            logger.info("** acl_default: {!r}".format(self.dummy.bot_config.ACCESS_CONTROLS_DEFAULT))
             self.dummy.callback_message(test['message'])
             self.assertEqual(
-                test['expected_response'],
-                self.dummy.pop_message().body
+                    test['expected_response'],
+                    self.dummy.pop_message().body
             )

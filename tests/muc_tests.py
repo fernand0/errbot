@@ -1,19 +1,18 @@
 import os
 import errbot.backends.base
-from errbot.backends.test import FullStackTest, TestMUCOccupant
+from errbot.backends.test import FullStackTest, TestOccupant
 import logging
-import unittest
 log = logging.getLogger(__name__)
 
 
 class TestMUC(FullStackTest):
 
     def setUp(self, extra_plugin_dir=None, extra_test_file=None, loglevel=logging.DEBUG):
-        super().setUp(os.path.join(os.path.dirname(os.path.realpath(__file__)), 'room_tests'),
-                      extra_test_file)
+        super().setUp(extra_plugin_dir=os.path.join(os.path.dirname(os.path.realpath(__file__)), 'room_tests'),
+                      extra_test_file=extra_test_file)
 
     def test_plugin_methods(self):  # noqa
-        p = self.bot.get_plugin_obj_by_name('ChatRoom')
+        p = self.bot.plugin_manager.get_plugin_obj_by_name('ChatRoom')
         assert p is not None
 
         assert hasattr(p, 'rooms')
@@ -25,7 +24,7 @@ class TestMUC(FullStackTest):
 
         r1 = rooms[0]
         assert str(r1) == "testroom"
-        assert issubclass(r1.__class__, errbot.backends.base.MUCRoom)
+        assert issubclass(r1.__class__, errbot.backends.base.Room)
 
         r2 = self.bot.query_room('testroom2')
         assert not r2.exists
@@ -58,7 +57,7 @@ class TestMUC(FullStackTest):
     def test_occupants(self):  # noqa
         room = self.bot.rooms()[0]
         assert len(room.occupants) == 1
-        assert TestMUCOccupant('err', 'testroom') in room.occupants
+        assert TestOccupant('err', 'testroom') in room.occupants
 
     def test_topic(self):  # noqa
         room = self.bot.rooms()[0]
@@ -69,7 +68,7 @@ class TestMUC(FullStackTest):
         assert self.bot.rooms()[0].topic == "Err rocks!"
 
     def test_plugin_callbacks(self):  # noqa
-        p = self.bot.get_plugin_obj_by_name('RoomTest')
+        p = self.bot.plugin_manager.get_plugin_obj_by_name('RoomTest')
         assert p is not None
         p.purge()
 

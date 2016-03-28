@@ -36,6 +36,8 @@ if PY3 and py_version < (3, 3):
 deps = ['webtest',
         'setuptools',
         'bottle',
+        'threadpool',
+        'rocket-errbot',
         'requests',
         'jinja2',
         'pyOpenSSL',
@@ -47,10 +49,12 @@ deps = ['webtest',
         'pygments-markdown-lexer>=0.1.0.dev39',  # sytax coloring to debug md
         ]
 
+
 if PY2:
     deps += ['dnspython',  # dnspython is needed for SRV records
              'config',
-             'backports.functools_lru_cache']
+             'backports.functools_lru_cache',
+             'configparser>=3.5.0b2', ]  # This is a backport from Python 3
 else:
     deps += ['dnspython3', ]  # dnspython3 for SRV records
 
@@ -65,6 +69,7 @@ if not PY35_OR_GREATER:
 deps += ['mock',
          'nose',
          'pep8',
+         'flaky',
          # Order matters here, pytest must come last. See also:
          #   https://github.com/errbotio/errbot/pull/496
          #   https://bitbucket.org/pypa/setuptools/issues/196/tests_require-pytest-pytest-cov-breaks
@@ -119,6 +124,14 @@ if __name__ == "__main__":
         tests_require=['nose', 'webtest', 'requests'],
         package_data={
             '': ['*.txt', '*.rst', '*.plug', '*.md'],
+        },
+        extras_require={
+            'graphic':  ['PySide', ],
+            'hipchat': ['hypchat', 'sleekxmpp', 'pyasn1', 'pyasn1-modules'],
+            'IRC': ['irc', ],
+            'slack': ['slackclient>=1.0.0', ],
+            'telegram': ['python-telegram-bot', ],
+            'XMPP': ['sleekxmpp', 'pyasn1', 'pyasn1-modules'],
         },
 
         author="errbot.io",

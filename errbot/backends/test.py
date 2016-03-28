@@ -1,3 +1,4 @@
+import importlib
 import logging
 import sys
 import unittest
@@ -9,11 +10,10 @@ from threading import Thread
 import pytest
 
 from errbot.rendering import text
-from errbot.backends.base import Message, MUCRoom, Identifier, MUCIdentifier, ONLINE
+from errbot.backends.base import Message, Room, Person, RoomOccupant, ONLINE
 from errbot.core_plugins.wsview import reset_app
 from errbot.errBot import ErrBot
 from errbot.main import setup_bot
-
 
 # Can't use __name__ because of Yapsy
 log = logging.getLogger('errbot.backends.test')
@@ -25,7 +25,7 @@ STZ_PRE = 2
 STZ_IQ = 3
 
 
-class TestIdentifier(Identifier):
+class TestPerson(Person):
     """
     This is an identifier just represented as a string.
     DO NOT USE THIS DIRECTLY AS IT IS NOT COMPATIBLE WITH MOST BACKENDS,
@@ -38,6 +38,7 @@ class TestIdentifier(Identifier):
     from object instead and make sure it includes all properties and
     methods exposed by this class.
     """
+
     def __init__(self, person, client=None, nick=None, fullname=None):
         self._person = person
         self._client = client
@@ -73,6 +74,7 @@ class TestIdentifier(Identifier):
         if self.client:
             return self._person + "/" + self._client
         return self._person
+
     __str__ = __unicode__
 
     def __eq__(self, other):
@@ -80,10 +82,11 @@ class TestIdentifier(Identifier):
 
 
 # noinspection PyAbstractClass
-class TestMUCOccupant(TestIdentifier, MUCIdentifier):
+class TestOccupant(TestPerson, RoomOccupant):
     """ This is a MUC occupant represented as a string.
         DO NOT USE THIS DIRECTLY AS IT IS NOT COMPATIBLE WITH MOST BACKENDS,
     """
+
     def __init__(self, person, room):
         super().__init__(person)
         self._room = room
@@ -93,7 +96,7 @@ class TestMUCOccupant(TestIdentifier, MUCIdentifier):
         return self._room
 
     def __unicode__(self):
-        return self._person + '@' + self._room
+        return self._person + '@' + str(self._room)
 
     __str__ = __unicode__
 
@@ -101,7 +104,7 @@ class TestMUCOccupant(TestIdentifier, MUCIdentifier):
         return self.person == other.person and self.room == other.room
 
 
-class TestMUCRoom(MUCRoom):
+class TestRoom(Room):
     def invite(self, *args):
         pass
 
@@ -117,7 +120,7 @@ class TestMUCRoom(MUCRoom):
         self._topic = topic
         self._bot = bot
         self._name = name
-        self._bot_mucid = TestMUCOccupant(self._bot.bot_config.BOT_IDENTITY['username'], self._name)
+        self._bot_mucid = TestOccupant(self._bot.bot_config.BOT_IDENTITY['username'], self._name)
 
     @property
     def occupants(self):
@@ -221,6 +224,7 @@ class TestBackend(ErrBot):
         self.md = text()
 
     def send_message(self, mess):
+        log.info("\n\n\nMESSAGE:\n%s\n\n\n", mess.body)
         super().send_message(mess)
         self.outgoing_message_queue.put(self.md.convert(mess.body))
 
@@ -268,7 +272,7 @@ class TestBackend(ErrBot):
         return
 
     def build_identifier(self, text_representation):
-        return TestIdentifier(text_representation)
+        return TestPerson(text_representation)
 
     def build_reply(self, mess, text=None, private=False):
         msg = self.build_message(text)
@@ -287,10 +291,11 @@ class TestBackend(ErrBot):
         try:
             return [r for r in self._rooms if str(r) == str(room)][0]
         except IndexError:
-            r = TestMUCRoom(room, bot=self)
+            r = TestRoom(room, bot=self)
             return r
 
     def prefix_groupchat_reply(self, message, identifier):
+        super().prefix_groupchat_reply(message, identifier)
         message.body = '@{0} {1}'.format(identifier.nick, message.body)
 
     def pop_message(self, timeout=5, block=True):
@@ -318,6 +323,10 @@ class TestBackend(ErrBot):
         self._rooms = []
 
 
+class ShallowConfig(object):
+    pass
+
+
 class TestBot(object):
     """
     A minimal bot utilizing the TestBackend, for use with unit testing.
@@ -332,18 +341,30 @@ class TestBot(object):
     """
     bot_thread = None
 
-    def __init__(self, extra_plugin_dir=None, loglevel=logging.DEBUG):
+    def __init__(self, extra_plugin_dir=None, loglevel=logging.DEBUG, extra_config=None):
+        self.setup(extra_plugin_dir=extra_plugin_dir, loglevel=loglevel, extra_config=extra_config)
+
+    def setup(self, extra_plugin_dir=None, loglevel=logging.DEBUG, extra_config=None):
         """
+        :param extra_config: Piece of extra configuration you want to inject to the config.
         :param extra_plugin_dir: Path to a directory from which additional
             plugins should be loaded.
         :param loglevel: Logging verbosity. Expects one of the constants
             defined by the logging module.
         """
-        __import__('errbot.config-template')
-        config = sys.modules['errbot.config-template']
         tempdir = mkdtemp()
+
+        # This is for test isolation.
+        config = ShallowConfig()
+        config.__dict__.update(importlib.import_module('errbot.config-template').__dict__)
         config.BOT_DATA_DIR = tempdir
         config.BOT_LOG_FILE = tempdir + sep + 'log.txt'
+        config.STORAGE = 'Memory'
+
+        if extra_config is not None:
+            log.debug('Merging %s to the bot config.' % repr(extra_config))
+            for k, v in extra_config.items():
+                setattr(config, k, v)
 
         # reset logging to console
         logging.basicConfig(format='%(levelname)s:%(message)s')
@@ -433,7 +454,7 @@ class FullStackTest(unittest.TestCase, TestBot):
                 self.assertIn('Err version', self.pop_message())
     """
 
-    def setUp(self, extra_plugin_dir=None, extra_test_file=None, loglevel=logging.DEBUG):
+    def setUp(self, extra_plugin_dir=None, extra_test_file=None, loglevel=logging.DEBUG, extra_config=None):
         """
         :param extra_plugin_dir: Path to a directory from which additional
             plugins should be loaded.
@@ -442,11 +463,12 @@ class FullStackTest(unittest.TestCase, TestBot):
             Path to an additional plugin which should be loaded.
         :param loglevel: Logging verbosity. Expects one of the constants
             defined by the logging module.
+        :param extra_config: Piece of extra bot config in a dict.
         """
         if extra_plugin_dir is None and extra_test_file is not None:
             extra_plugin_dir = sep.join(abspath(extra_test_file).split(sep)[:-2])
 
-        TestBot.__init__(self, extra_plugin_dir=extra_plugin_dir, loglevel=loglevel)
+        self.setup(extra_plugin_dir=extra_plugin_dir, loglevel=loglevel, extra_config=extra_config)
         self.start()
 
     def tearDown(self):
@@ -518,10 +540,10 @@ def testbot(request):
     kwargs = {}
 
     for attr, default in (('extra_plugin_dir', None), ('loglevel', logging.DEBUG),):
-            if hasattr(request, 'instance'):
-                kwargs[attr] = getattr(request.instance, attr, None)
-            if kwargs[attr] is None:
-                kwargs[attr] = getattr(request.module, attr, default)
+        if hasattr(request, 'instance'):
+            kwargs[attr] = getattr(request.instance, attr, None)
+        if kwargs[attr] is None:
+            kwargs[attr] = getattr(request.module, attr, default)
 
     bot = TestBot(**kwargs)
     bot.start()

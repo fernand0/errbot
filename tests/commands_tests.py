@@ -1,13 +1,14 @@
 # coding=utf-8
-from queue import Empty
 import re
 import logging
-
-from os import path, mkdir
-from shutil import rmtree
 from errbot.backends.test import FullStackTest
+from flaky import flaky
+from os import path, mkdir
+from queue import Empty
+from shutil import rmtree
 
 
+@flaky
 class TestCommands(FullStackTest):
 
     def setUp(self, *args, **kwargs):
@@ -17,7 +18,7 @@ class TestCommands(FullStackTest):
         super().setUp(*args, **kwargs)
 
     def test_root_help(self):
-        self.assertCommand('!help', 'Available help')
+        self.assertCommand('!help', 'All commands')
 
     def test_help(self):
         self.assertCommand('!help Help', '!about')
@@ -29,7 +30,7 @@ class TestCommands(FullStackTest):
         self.assertCommand('!help re foo', 'runs re_foo')  # Part of Dummy
 
     def test_about(self):
-        self.assertCommand('!about', 'Err version')
+        self.assertCommand('!about', 'Errbot version')
 
     def test_uptime(self):
         self.assertCommand('!uptime', 'I\'ve been up for')
@@ -66,7 +67,7 @@ class TestCommands(FullStackTest):
         self.assertCommand('!plugin config Webserver', 'localhost')
 
     def test_apropos(self):
-        self.assertCommand('!apropos about', '!about: Returns some')
+        self.assertCommand('!apropos about', '!about: Return information about')
 
     def test_logtail(self):
         self.assertCommand('!log tail', 'DEBUG')
@@ -92,15 +93,19 @@ class TestCommands(FullStackTest):
     def test_plugin_cycle(self):
 
         plugins = [
-            # 'git://github.com/errbotio/err-helloworld.git',
             'errbotio/err-helloworld',
         ]
 
         for plugin in plugins:
-            self.assertCommand('!repos install {0}'.format(plugin),
-                               'errbotio/err-helloworld',
-                               60)
-            self.assertIn('reload', self.bot.pop_message())
+            self.assertCommand(
+                '!repos install {0}'.format(plugin),
+                'Installing {0}...'.format(plugin)
+            ),
+            self.assertIn(
+                'A new plugin repository has been installed correctly from errbotio/err-helloworld',
+                self.bot.pop_message(timeout=60)
+            )
+            self.assertIn('Plugins reloaded', self.bot.pop_message())
 
             self.assertCommand('!help hello', 'this command says hello')
             self.assertCommand('!hello', 'Hello World !')
@@ -128,17 +133,28 @@ class TestCommands(FullStackTest):
             self.assertEqual('Hello World !', self.bot.pop_message())
 
             self.bot.push_message('!repos uninstall errbotio/err-helloworld')
-            self.assertEqual('Removing HelloWorld...', self.bot.pop_message())
             self.assertEqual('Repo errbotio/err-helloworld removed.', self.bot.pop_message())
 
             self.bot.push_message('!hello')  # should not respond
             self.assertIn('Command "hello" not found', self.bot.pop_message())
 
+    def test_broken_plugin(self):
+        self.assertCommand(
+            '!repos install https://github.com/errbotio/err-broken.git',
+            'Installing',
+            60
+        )
+        self.assertIn('import borken # fails', self.bot.pop_message())
+        self.assertIn('err-broken as it did not load correctly.', self.bot.pop_message())
+        self.assertIn('Plugins reloaded.', self.bot.pop_message())
+
     def test_backup(self):
-        self.bot.push_message('!repos install git://github.com/errbotio/err-helloworld.git')
+        bot = self.bot  # used while restoring
+        bot.push_message('!repos install https://github.com/errbotio/err-helloworld.git')
+        self.assertIn('Installing', self.bot.pop_message())
         self.assertIn('err-helloworld', self.bot.pop_message(timeout=60))
         self.assertIn('reload', self.bot.pop_message())
-        self.bot.push_message('!backup')
+        bot.push_message('!backup')
         msg = self.bot.pop_message()
         self.assertIn('has been written in', msg)
         filename = re.search(r"'([A-Za-z0-9_\./\\-]*)'", msg).group(1)
@@ -147,17 +163,23 @@ class TestCommands(FullStackTest):
         self.assertIn('errbotio/err-helloworld', open(filename).read())
 
         # Now try to clean the bot and restore
+        for p in self.bot.plugin_manager.get_all_active_plugin_objects():
+            p.close_storage()
+
+        self.assertCommand('!plugin deactivate HelloWorld', 'Plugin HelloWorld deactivated.')
+
         plugins_dir = path.join(self.bot.bot_config.BOT_DATA_DIR, 'plugins')
+        bot.repo_manager['installed_repos'] = {}
+        bot.plugin_manager['configs'] = {}
         rmtree(plugins_dir)
         mkdir(plugins_dir)
-        self.bot['repos'] = {}
-        self.bot['configs'] = {}
 
         # emulates the restore environment
         log = logging.getLogger(__name__)  # noqa
-        bot = self.bot  # noqa
         with open(filename) as f:
             exec(f.read())
+
+        self.assertCommand('!plugin activate HelloWorld', 'Plugin HelloWorld activated.')
         self.assertCommand('!hello', 'Hello World !')
         self.bot.push_message('!repos uninstall errbotio/err-helloworld')
 

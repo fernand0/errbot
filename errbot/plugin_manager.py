@@ -1,5 +1,5 @@
 """ Logic related to plugin loading and lifecycle """
-
+import traceback
 from configparser import NoSectionError, NoOptionError, ConfigParser
 from itertools import chain
 import importlib
@@ -8,21 +8,15 @@ import inspect
 import logging
 import sys
 import os
-import subprocess
-from tarfile import TarFile
-from urllib.request import urlopen
-
 import pip
 from .botplugin import BotPlugin
-from .utils import (version2array, PY3, PY2, find_roots_with_extra,
-                    PLUGINS_SUBDIR, which, human_name_for_git_url)
+from .utils import (version2array, PY3, PY2, collect_roots, ensure_sys_path_contains)
 from .templating import remove_plugin_templates_path, add_plugin_templates_path
 from .version import VERSION
 from yapsy.PluginManager import PluginManager
 from yapsy.PluginFileLocator import PluginFileLocator, PluginFileAnalyzerWithInfoFile
 from .core_plugins.wsview import route
 from .storage import StoreMixin
-from .repos import KNOWN_PUBLIC_REPOS
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +43,8 @@ def populate_doc(plugin):
 
 
 def install_package(package):
+    """ Return an exc_info if it fails otherwise None.
+    """
     log.info("Installing package '%s'." % package)
     if hasattr(sys, 'real_prefix'):
         # this is a virtualenv, so we can use it directly
@@ -60,6 +56,8 @@ def install_package(package):
         globals()[package] = importlib.import_module(package)
     except:
         log.exception("Failed to load the dependent package")
+        return sys.exc_info()
+    return None
 
 
 def check_dependencies(path):
@@ -85,11 +83,28 @@ def check_dependencies(path):
                 except Exception:
                     missing_pkg.append(stripped)
         if missing_pkg:
-            return (('You need those dependencies for %s: ' % path) + ','.join(missing_pkg),
+            return (('You need these dependencies for %s: ' % path) + ','.join(missing_pkg),
                     missing_pkg)
         return None
     except Exception:
         return 'You need to have setuptools installed for the dependency check of the plugins', []
+
+
+def check_enabled_core_plugin(name: str, config: ConfigParser, core_plugin_list) -> bool:
+    """ Checks if the given plugin is core and if it is, if it is part of the enabled core_plugins_list.
+
+    :param name: The plugin name
+    :param config: Its config
+    :param core_plugin_list: the list from CORE_PLUGINS in the config.
+    :return: True if it is OK to load this plugin.
+    """
+    try:
+        core = config.get("Core", "Core")
+        if core.lower() == 'true' and name not in core_plugin_list:
+            return False
+    except NoOptionError:
+        pass
+    return True
 
 
 def check_python_plug_section(name: str, config: ConfigParser) -> bool:
@@ -119,7 +134,7 @@ def check_python_plug_section(name: str, config: ConfigParser) -> bool:
         return False
 
     if python_version == '3' and PY2:
-        log.error('\nPlugin %s is made for python 3 and you are running err under python 2.')
+        log.error('\nPlugin %s is made for python 3 and you are running err under python 2.', name)
         return False
     return True
 
@@ -190,40 +205,40 @@ class BotPluginManager(PluginManager, StoreMixin):
     """Customized yapsy PluginManager for ErrBot."""
 
     # Storage names
-    REPOS = b'repos' if PY2 else 'repos'
     CONFIGS = b'configs' if PY2 else 'configs'
     BL_PLUGINS = b'bl_plugins' if PY2 else 'bl_plugins'
 
-    # gbin: making an __init__ here will be tricky with the MRO
-    # use _init_plugin_manager directly.
+    def __init__(self, storage_plugin, repo_manager, extra, autoinstall_deps, core_plugins):
+        self.bot = None
+        self.autoinstall_deps = autoinstall_deps
+        self.extra = extra
+        self.open_storage(storage_plugin, 'core')
+        self.core_plugins = core_plugins
+        self.repo_manager = repo_manager
 
-    def _init_plugin_manager(self, bot_config):
-        self.plugin_dir = os.path.join(bot_config.BOT_DATA_DIR, PLUGINS_SUBDIR)
-        self.open_storage(os.path.join(bot_config.BOT_DATA_DIR, 'core.db'))
+        # if this is the old format migrate the entries in repo_manager
+        ex_entry = b'repos' if PY2 else 'repos'
+        if ex_entry in self:
+            log.info('You are migrating from v3 to v4, porting your repo info...')
+            for name, url in self[ex_entry].items():
+                log.info('Plugin %s from URL %s.', (name, url))
+                repo_manager.add_plugin_repo(name, url)
+            log.info('update successful, removing old entry.')
+            del(self[ex_entry])
+
         # be sure we have a configs entry for the plugin configurations
         if self.CONFIGS not in self:
             self[self.CONFIGS] = {}
 
-        self.setCategoriesFilter({"bots": BotPlugin})
         locator = PluginFileLocator([PluginFileAnalyzerWithInfoFile("info_ext", 'plug')])
         locator.disableRecursiveScan()  # We do that ourselves
-        self.setPluginLocator(locator)
+        super().__init__(categories_filter={"bots": BotPlugin}, plugin_locator=locator)
+
+    def attach_bot(self, bot):
+        self.bot = bot
 
     def instanciateElement(self, element):
-        """ Override the loading method to inject bot """
-        if PY3:
-            # check if we have a plugin not overridding __init__ incorrectly
-            sig = inspect.signature(element.__init__)
-
-            log.debug('plugin __init__(%s)' % sig.parameters)
-            if len(sig.parameters) == 1:
-                log.warn(('Warning: %s needs to implement __init__(self, *args, **kwargs) '
-                          'and forward them to super().__init__') % element.__name__)
-                obj = element()
-                obj._load_bot(self)  # sideload the bot
-                return obj
-
-        return element(self)
+        return element(self.bot)
 
     def get_plugin_by_name(self, name):
         return self.getPluginByName(name, 'bots')
@@ -238,6 +253,11 @@ class BotPluginManager(PluginManager, StoreMixin):
             log.warning('Could not activate %s', name)
             return None
 
+        if self.core_plugins is not None:
+            if not check_enabled_core_plugin(name, pta_item.details, self.core_plugins):
+                log.warn('Core plugin "%s" has been skipped because it is not in CORE_PLUGINS in config.py.' % name)
+                return None
+
         if not check_python_plug_section(name, pta_item.details):
             log.error('%s failed python version check.', name)
             return None
@@ -247,9 +267,6 @@ class BotPluginManager(PluginManager, StoreMixin):
             return None
 
         obj = pta_item.plugin_object
-
-        # Deprecated: old way to check for min/max versions
-        check_errbot_version(name, obj.min_err_version, obj.max_err_version)
 
         try:
             if obj.get_configuration_template() is not None and config is not None:
@@ -310,45 +327,42 @@ class BotPluginManager(PluginManager, StoreMixin):
             self.activate_plugin(name)
 
     def update_plugin_places(self, path_list, extra_plugin_dir, autoinstall_deps=True):
-        builtins = find_roots_with_extra(CORE_PLUGINS, extra_plugin_dir)
+        """ It returns a dictionary of path -> error strings."""
+        repo_roots = (CORE_PLUGINS, extra_plugin_dir, path_list)
 
-        paths = path_list
-        if extra_plugin_dir:
-            if isinstance(extra_plugin_dir, list):
-                paths += extra_plugin_dir
-            else:
-                paths += [extra_plugin_dir, ]
-
-        for entry in chain(builtins, paths):
+        paths = collect_roots(repo_roots)
+        log.debug("All plugin roots:")
+        for entry in paths:
+            log.debug("-> %s", entry)
             if entry not in sys.path:
-                log.debug("Add %s to sys.path" % entry)
-                sys.path.append(entry)  # so plugins can relatively import their repos
+                log.debug("Add %s to sys.path", entry)
+                sys.path.append(entry)
+        # so plugins can relatively import their repos
+        ensure_sys_path_contains(repo_roots)
 
-        dependencies_result = [check_dependencies(path) for path in paths]
+        dependencies_result = {path: check_dependencies(path) for path in paths}
         deps_to_install = set()
+        errors = {}
         if autoinstall_deps:
-            for result in dependencies_result:
+            for path, result in dependencies_result.items():
                 if result:
-                    deps_to_install.update(result[1])
-            if deps_to_install:
-                for dep in deps_to_install:
-                    if dep.strip() != '':
-                        log.info("Trying to install an unmet dependency: '%s'" % dep)
-                        install_package(dep)
-            errors = []
+                    deps = result[1]
+                    for dep in deps:
+                        if dep.strip() != '' and dep not in deps_to_install:
+                            deps_to_install.update(dep)
+                            log.info("Trying to install an unmet dependency: '%s'" % dep)
+                            error = install_package(dep)
+                            if error is not None:
+                                errors[path] = ''.join(traceback.format_tb(error))
         else:
-            errors = [result[0] for result in dependencies_result if result is not None]
-        self.setPluginPlaces(chain(builtins, path_list))
+            errors.update({path: result[0] for path, result in dependencies_result.items() if result is not None})
+        self.setPluginPlaces(paths)
         self.locatePlugins()
 
         self.all_candidates = [candidate[2] for candidate in self.getPluginCandidates()]
 
-        # noinspection PyBroadException
-        try:
-            self.loadPlugins()
-        except Exception:
-            log.exception("Error while loading plugins")
-
+        errors.update({pluginfo.path: ''.join(traceback.format_tb(pluginfo.error[2]))
+                       for pluginfo in self.loadPlugins() if pluginfo.error is not None})
         return errors
 
     def get_all_active_plugin_objects(self):
@@ -365,51 +379,6 @@ class BotPluginManager(PluginManager, StoreMixin):
     def deactivate_all_plugins(self):
         for name in self.get_all_active_plugin_names():
             self.deactivatePluginByName(name, "bots")
-
-    # Repo management
-    def get_installed_plugin_repos(self):
-
-        repos = self.get(self.REPOS, {})
-
-        if not repos:
-            return repos
-
-        # Fix to migrate exiting plugins into new format
-        for url in self.get(self.REPOS, repos).values():
-            if type(url) == dict:
-                continue
-            t_name = '/'.join(url.split('/')[-2:])
-            name = t_name.replace('.git', '')
-
-            t_repo = {name: {
-                'path': url,
-                'documentation': 'Unavilable',
-                'python': None,
-                'avatar_url': None,
-                }
-            }
-            repos.update(t_repo)
-        return repos
-
-    def set_plugin_repos(self, repos):
-        self[self.REPOS] = repos
-
-    def add_plugin_repo(self, name, url):
-        if PY2:
-            name = name.encode('utf-8')
-            url = url.encode('utf-8')
-        repos = self.get_installed_plugin_repos()
-
-        t_installed = {name: {
-            'path': url,
-            'documentation': 'Unavilable',
-            'python': None,
-            'avatar_url': None,
-            }
-        }
-
-        repos.update(t_installed)
-        self.set_plugin_repos(repos)
 
     # plugin blacklisting management
     def get_blacklisted_plugin(self):
@@ -450,9 +419,8 @@ class BotPluginManager(PluginManager, StoreMixin):
 
     # this will load the plugins the admin has setup at runtime
     def update_dynamic_plugins(self):
-        return self.update_plugin_places(
-            [self.plugin_dir + os.sep + d for d in self.get(self.REPOS, {}).keys()],
-            self.bot_config.BOT_EXTRA_PLUGIN_DIR, self.bot_config.AUTOINSTALL_DEPS)
+        """ It returns a dictionary of path -> error strings."""
+        return self.update_plugin_places(self.repo_manager.get_all_repos_paths(), self.extra, self.autoinstall_deps)
 
     def activate_non_started_plugins(self):
         log.info('Activating all the plugins...')
@@ -461,17 +429,15 @@ class BotPluginManager(PluginManager, StoreMixin):
         for pluginInfo in self.getAllPlugins():
             try:
                 if self.is_plugin_blacklisted(pluginInfo.name):
-                    errors += ('Notice: %s is blacklisted, use %s plugin unblacklist %s to unblacklist it\n') % (
-                        self.prefix, pluginInfo.name, pluginInfo.name)
+                    errors += 'Notice: %s is blacklisted, use %s plugin unblacklist %s to unblacklist it\n' % (
+                        self.bot.prefix, pluginInfo.name, pluginInfo.name)
                     continue
                 if hasattr(pluginInfo, 'is_activated') and not pluginInfo.is_activated:
                     log.info('Activate plugin: %s' % pluginInfo.name)
                     self.activate_plugin_with_version_check(pluginInfo.name, configs.get(pluginInfo.name, None))
             except Exception as e:
                 log.exception("Error loading %s" % pluginInfo.name)
-                errors += 'Error: %s failed to start : %s\n' % (pluginInfo.name, e)
-        if errors:
-            self.warn_admins(errors)
+                errors += 'Error: %s failed to start: %s\n' % (pluginInfo.name, e)
         return errors
 
     def activate_plugin(self, name):
@@ -493,32 +459,6 @@ class BotPluginManager(PluginManager, StoreMixin):
         self.deactivate_plugin_by_name(name)
         return "Plugin %s deactivated." % name
 
-    def install_repo(self, repo):
-        if repo in KNOWN_PUBLIC_REPOS:
-            repo = KNOWN_PUBLIC_REPOS[repo]['path']  # replace it by the url
-        git_path = which('git')
-
-        if not git_path:
-            return ('git command not found: You need to have git installed on '
-                    'your system to be able to install git based plugins.', )
-
-        # TODO: Update download path of plugin.
-        if repo.endswith('tar.gz'):
-            tar = TarFile(fileobj=urlopen(repo))
-            tar.extractall(path=self.plugin_dir)
-            s = repo.split(':')[-1].split('/')[-2:]
-            human_name = '/'.join(s).rstrip('.tar.gz')
-        else:
-            human_name = human_name_for_git_url(repo)
-            p = subprocess.Popen([git_path, 'clone', repo, human_name], cwd=self.plugin_dir, stdout=subprocess.PIPE,
-                                 stderr=subprocess.PIPE)
-            feedback = p.stdout.read().decode('utf-8')
-            error_feedback = p.stderr.read().decode('utf-8')
-            if p.wait():
-                return "Could not load this plugin: \n\n%s\n\n---\n\n%s" % (feedback, error_feedback),
-        self.add_plugin_repo(human_name, repo)
-        return self.update_dynamic_plugins()
-
     def remove_plugin(self, plugin):
         """
         Deactivate and remove a plugin completely.
@@ -537,6 +477,14 @@ class BotPluginManager(PluginManager, StoreMixin):
             if plugin in plugins:
                 log.debug('plugin found and removed from category %s', category)
                 plugins.remove(plugin)
+
+    def remove_plugins_from_path(self, root):
+        """
+        Remove all the plugins that are in the filetree pointed by root.
+        """
+        for plugin in self.getAllPlugins():
+            if plugin.path.startswith(root):
+                self.remove_plugin(plugin)
 
     def shutdown(self):
         log.info('Shutdown.')

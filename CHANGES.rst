@@ -1,4 +1,218 @@
-v3.2.0 (unreleased)
+v9.9.9 (master/unreleased)
+--------------------------
+v4.0.3 (2016-03-17)
+-------------------
+Hotfixes
+
+bugs:
+
+- XMPP backend compatibility with python 2.7
+- Telegram startup error
+- daemonize regression
+- UTF-8 detection
+
+v4.0.2 (2016-03-15)
+-------------------
+Hotfixes
+
+bugs:
+
+- configparser needs to be pinned to a 3.5.0b2 beta
+- Hipchat regression on Identifiers
+- Slack: avoid URI expansion.
+
+v4.0.1 (2016-03-14)
+-------------------
+Hotfixes for 4.0.0.
+
+bugs:
+
+- v4 doesn't migrate plugin repos entries from v3.
+- py2 compatibility.
+
+v4.0.0 (2016-03-13)
+-------------------
+
+This is the next major release of errbot with significant changes under the hood.
+
+
+New features
+~~~~~~~~~~~~
+
+- Storage is now implemented as a plugin as well, similar to command plugins and backends.
+  This means you can now select different storage implementations or even write your own.
+
+The following storage backends are currently available:
+
+  + The traditional Python `shelf` storage.
+  + In-memory storage for tests or ephemeral storage.
+  + `SQL storage <https://github.com/errbotio/err-storage-sql>`_ which supports relational databases such as MySQL, Postgres, Redshift etc.
+  + `Firebase storage <https://github.com/errbotio/err-storage-firebase>`_ for the Google Firebase DB.
+  + `Redis storage <https://github.com/errbotio/err-storage-redis>`_ (thanks Sijis Aviles!) which uses the Redis in-memory data structure store.
+
+- Unix-style glob support in `BOT_ADMINS` and `ACCESS_CONTROLS` (see the updated `config-template.py` for documentation).
+
+- The ability to apply ACLs to all commands exposed by a plugin (see the updated `config-template.py` for documentation).
+
+- The mention_callcack() on IRC (mr. Shu).
+
+- A new (externally maintained) `Skype backend <https://github.com/errbotio/errbot-backend-skype>`_.
+
+- The ability to disable core plugins (such as `!help`, `!status`, etc) from loading (see `CORE_PLUGINS` in the updated `config-template.py`).
+
+- Added a `--new-plugin` flag to `errbot` which can create an emply plugin skeleton for you.
+
+- IPv6 configuration support on IRC (Mike Burke)
+
+- More flexible access controls on IRC based on nickmasks (in part thanks to Marcus Carlsson).
+  IRC users, see the new `IRC_ACL_PATTERN` in `config-template.py`.
+
+- A new `callback_mention()` for plugins (not available on all backends).
+
+- Admins are now notified about plugin startup errors which happen during bot startup
+
+- The repos listed by the `!repos` command are now fetched from a public index and can be
+  queried with `!repos query [keyword]`. Additionally, it is now possible to add your own
+  index(es) to this list as well in case you wish to maintain a private index (special
+  thanks to Sijis Aviles for the initial proof-of-concept implementation).
+
+
+Bugs fixed
+~~~~~~~~~~
+
+- IRC backend no longer crashes on invalid UTF-8 characters but instead replaces
+  them (mr. Shu).
+
+- Fixed joining password-protected rooms (Mikko Lehto)
+
+- Compatibility to API changes introduced in slackclient-1.0.0 (used by the Slack backend).
+
+- Corrected room joining on IRC (Ezequiel Hector Brizuela).
+
+- Fixed *"team_join event handler raised an exception"* on Slack.
+
+- Fixed `DIVERT_TO_PRIVATE` on HipChat.
+
+- Fixed `DIVERT_TO_PRIVATE` on Slack.
+
+- Fixed `GROUPCHAT_NICK_PREFIXED` not prefixing the user on regular commands.
+
+- Fixed `HIDE_RESTRICTED_ACCESS` from accidentally sending messages when issuing `!help`.
+
+- Fixed `DIVERT_TO_PRIVATE` on IRC.
+
+- Fixed markdown rendering breaking with `GROUPCHAT_NICK_PREFIXED` enabled.
+
+- Fixed `AttributeError` with `AUTOINSTALL_DEPS` enabled.
+
+- IRC backend now cleanly disconnects from IRC servers instead of just cutting the connection.
+
+- Text mode now displays the prompt beneath the log output
+
+- Plugins which fail to install no longer remain behind, obstructing a new installation attempt
+
+
+Breaking changes
+~~~~~~~~~~~~~~~~
+
+- The underlying implementation of Identifiers has been drastically refactored
+  to be more clear and correct. This makes it a lot easier to construct Identifiers
+  and send messages to specific people or rooms.
+
+- The file format for `--backup` and `--restore` has changed between 3.x and 4.0
+  On the v3.2 branch, backup can now backup using the new v4 format with `!backupv4` to
+  make it possible to use with `--restore` on errbot 4.0.
+
+A number of features which had previously been deprecated have now been removed.
+These include:
+
+- `configure_room` and `invite_in_room` in `XMPPBackend` (use the
+  equivalent functions on the `XMPPRoom` object instead)
+
+- The `--xmpp`, `--hipchat`, `--slack` and `--irc` command-line options
+  from `errbot` (set a proper `BACKEND` in `config.py` instead).
+
+
+Miscellaneous changes
+~~~~~~~~~~~~~~~~~~~~~
+
+- Version information is now specified in plugin `.plug` files instead of in
+  the Python class of the plugin.
+
+- Updated `!help` output, more similar to Hubot's help output (James O'Beirne and Sijis Aviles).
+
+- XHTML-IM output can now be enabled on XMPP again.
+
+- New `--version` flag on `errbot` (mr. Shu).
+
+- Made `!log tail` admin only (Nicolas Sebrecht).
+
+- Made the version checker asynchronous, improving startup times.
+
+- Optionally allow bot configuration from groupchat
+
+- `Message.type` is now deprecated in favor of `Message.is_direct` and `Message.is_group`.
+
+- Some bundled dependencies have been refactored out into external dependencies.
+
+- Many improvements have been made to the documention, both in docstrings internally as well
+  as the user guide on the website at http://errbot.io.
+
+
+Further info on identifier changes
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Person, RoomOccupant and Room are now all equal and can be used as-is to send a message
+  to a person, a person in a Room or a Room itself.
+
+The relationship is as follow:
+
+.. image:: https://raw.githubusercontent.com/errbotio/errbot/master/docs/_static/arch/identifiers.png
+   :target: https://github.com/errbotio/errbot/blob/master/errbot/backends/base.py
+
+For example: A Message sent from a room will have a RoomOccupant as frm and a Room as to.
+
+This means that you can now do things like:
+
+- `self.send(msg.frm, "Message")`
+- `self.send(self.query_room("#general"), "Hello everyone")`
+
+
+v3.2.3 (2016-02-18)
+-------------------
+
+bugs:
+
+- IRC:    Use the NickMask helper for parsing IRC Identity and proper ACL (thx Marcus Carlsson)
+- IRC:    Fix random UnicodeDecodeErrors  (thx mr.Shu)
+- XMPP:   Fix join on MUCRoom with password (thx Mikko Lehto)
+- XMPP:   Fix join on Room list (from CHATROOM_PRESENCE for example) (thx Mikko Lehto)
+- Backup: NullBackend was missing few methods and was crashing.
+- IRC:    Synchronize join and joined events
+
+v3.2.2 (2015-12-08)
+-------------------
+
+bugs:
+
+- shutdown was not called properly anymore leading to possible plugin configuration loss.
+- fixed tarfile plugin install
+- fixed error reporting on webhook json parsing
+- fixed/hacked so the prompt on text mode appear after the asynchronous log entries
+
+features:
+
+- added a warning if the system encoding is not utf-8
+
+
+v3.2.1 (2015-11-15)
+-------------------
+
+other:
+
+- Pypi fixes.
+
+v3.2.0 (2015-11-13)
 -------------------
 
 features:
@@ -10,6 +224,7 @@ features:
 - Now the bot can set its own status/presence with change_presence
 - Non-standard hipchat server (thx Barak Schiller)
 
+
 bugs:
 
 - Fixed various bugs with the ``@arg_botcmd`` decorator (`#516 <https://github.com/errbotio/errbot/pull/516>`_)
@@ -19,11 +234,14 @@ bugs:
 - Slack identifiers can now be built from a `<#C12345>` or `<@username>` string (the webclient formats them like this automatically when chatting with the bot)
 - HipChat backend now respects the `server` option under `BOT_IDENTITY` (`#544 <https://github.com/errbotio/errbot/pull/544/>`_)
 - The IRC backend will no longer throw UnicodeDecodeError but replaces characters which cannot be decoded as UTF-8 (`#570 <https://github.com/errbotio/errbot/pull/570>`_, Mr. Shu)
+- Fixed a bug that would prevent the bot from joining password-protected rooms (`#578 <https://github.com/errbotio/errbot/pull/578>`_, Mikko Lehto)
 
 other:
 
+- various internal improvements and refactoring
 - Removed some dead code
 - Removed deprecated bare_send and invite_to_room bot methods
+- Doc improvements (thx Anita Woodruff)
 
 v3.1.3 (2015-11-12)
 -------------------
@@ -72,35 +290,33 @@ bugs:
 - yield not work with @arg_botcmd (thx Andre Van Der Merwe)
 - backup/restore fixes
 
-v3.0.4
-------
+v3.0.4 (2015-09-12)
+-------------------
 - Small setup.py cleanup
 - force XMPP to ascii rendering (xhtml-im is beyond broken)
 - Fixed !room list
 - Fixed !room occupants [room] on XMPP
 
-v3.0.3
-------
+v3.0.3 (2015-08-26)
+-------------------
 - fixed the missing path for relative imports in plugins.
 - better pre rendering on graphic backend
 - better !log tail rendering
 - add alt as an alternative modifier on graphic backend (it was problematic on MacOS)
 
-v3.0.2
-------
+v3.0.2 (2015-08-26)
+-------------------
 - multiple fixes for the graphic backend (it is waaay nicer now)
 - missing spots in doc and feedback for for activate/deactivate
 - aclattr fix for the slack backend
 - status uses more of the markdown goodies
 
-v3.0.1
-------
+v3.0.1 (2015-08-20)
+-------------------
 - bugfix for IRC backend not starting.
 
-v3.0.0
-------
-
-``Release date: 2015-08-17``
+v3.0.0 (2015-08-17)
+-------------------
 
 We have decided to promote this release as the v3 \\o/.
 
@@ -108,8 +324,8 @@ This document includes all the changes since the last stable version (2.2.0).
 
 If you have any difficulty using this new release, feel free to jump into our `dev room on gitter <https://gitter.im/errbotio/errbot>`_.
 
-New and noteworthy
-~~~~~~~~~~~~~~~~~~
+v3 New and noteworthy
+~~~~~~~~~~~~~~~~~~~~~
 
 - backends are now plugins too
 - new Slack backend (see the `config template <https://github.com/errbotio/errbot/blob/master/errbot/config-template.py#L118>`_ for details)

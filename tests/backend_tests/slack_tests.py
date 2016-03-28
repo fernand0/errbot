@@ -31,9 +31,13 @@ if slack:
             """Have to mock because we don't have a slack server."""
             return 'Utest'
 
+        def channelid_to_channelname(self, channelid):
+            return 'meh'
+
 
 @unittest.skipIf(not slack, "package slackclient not installed")
 class SlackTests(unittest.TestCase):
+
     def setUp(self):
         # make up a config.
         tempdir = mkdtemp()
@@ -163,3 +167,58 @@ class SlackTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             extract_from("<@I12345>")
+
+    def test_uri_sanitization(self):
+        sanitize = self.slack.sanitize_uris
+
+        self.assertEqual(
+            sanitize(
+                "The email is <mailto:test@example.org|test@example.org>."),
+            "The email is test@example.org."
+        )
+
+        self.assertEqual(
+            sanitize(
+                "Pretty URL Testing: <http://example.org|example.org> with "
+                "more text"),
+            "Pretty URL Testing: example.org with more text"
+        )
+
+        self.assertEqual(
+            sanitize("URL <http://example.org>"),
+            "URL http://example.org"
+        )
+
+        self.assertEqual(
+            sanitize("Normal &lt;text&gt; that shouldn't be affected"),
+            "Normal &lt;text&gt; that shouldn't be affected"
+        )
+
+        self.assertEqual(
+            sanitize(
+                "Multiple uris <mailto:test@example.org|test@example.org>, "
+                "<mailto:other@example.org|other@example.org> and "
+                "<http://www.example.org>, <https://example.com> and "
+                "<http://subdomain.example.org|subdomain.example.org>."),
+            "Multiple uris test@example.org, other@example.org and "
+            "http://www.example.org, https://example.com and subdomain.example.org."
+        )
+
+    def test_slack_markdown_link_preprocessor(self):
+        convert = self.slack.md.convert
+        self.assertEqual(
+            "This is <http://example.com/|a link>.",
+            convert("This is [a link](http://example.com/).")
+        )
+        self.assertEqual(
+            "This is <https://example.com/|a link> and <mailto:me@comp.org|an email address>.",
+            convert("This is [a link](https://example.com/) and [an email address](mailto:me@comp.org).")
+        )
+        self.assertEqual(
+            "This is <http://example.com/|a link> and a manual URL: https://example.com/.",
+            convert("This is [a link](http://example.com/) and a manual URL: https://example.com/.")
+        )
+        self.assertEqual(
+            "This is http://example.com/image.png.",
+            convert("This is ![an image](http://example.com/image.png).")
+        )

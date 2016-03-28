@@ -2,14 +2,22 @@
 # vim: ts=4:sw=4
 import logging
 import sys
+try:
+    from functools import lru_cache
+except ImportError:
+    from backports.functools_lru_cache import lru_cache
 
 from markdown import Markdown
 from markdown.extensions.extra import ExtraExtension
 from markdown.extensions import Extension
 from markdown.treeprocessors import Treeprocessor
 
-from errbot.backends.base import RoomDoesNotExistError
-from errbot.backends.xmpp import XMPPMUCOccupant, XMPPMUCRoom, XMPPBackend, XMPPConnection
+from errbot.backends.base import Room, RoomDoesNotExistError, Message
+from errbot.backends.xmpp import (
+    XMPPPerson, XMPPRoomOccupant,
+    XMPPBackend, XMPPConnection,
+    split_identifier
+)
 
 
 # Can't use __name__ because of Yapsy
@@ -61,7 +69,7 @@ def hipchat_html():
     return Markdown(output_format='xhtml', extensions=[ExtraExtension(), HipchatExtension()])
 
 
-class HipChatMUCOccupant(XMPPMUCOccupant):
+class HipChatRoomOccupant(XMPPRoomOccupant):
     """
     An occupant of a Multi-User Chatroom.
 
@@ -69,36 +77,36 @@ class HipChatMUCOccupant(XMPPMUCOccupant):
     https://www.hipchat.com/docs/apiv2/method/get_all_participants
     with the link to self expanded.
     """
-    def __init__(self, user):
+    def __init__(self, node=None, domain=None, resource=None, room=None, hipchat_user=None):
         """
-        :param user:
+        :param hipchat_user:
             A user object as returned by
             https://www.hipchat.com/docs/apiv2/method/get_all_participants
             with the link to self expanded.
         """
-        for k, v in user.items():
-            setattr(self, k, v)
-        # Quick fix to be able to all the parent.
-        node_domain, resource = user['xmpp_jid'].split('/')
-        node, domain = node_domain.split('@')
-        super().__init__(node, domain, resource)
-
-    def __str__(self):
-        return self.name
+        if hipchat_user:
+            for k, v in hipchat_user.items():
+                setattr(self, k, v)
+            # Quick fix to be able to all the parent.
+            node_domain, resource = hipchat_user['xmpp_jid'].split('/')
+            node, domain = node_domain.split('@')
+        super().__init__(node, domain, resource, room)
 
 
-class HipChatMUCRoom(XMPPMUCRoom):
+class HipChatRoom(Room):
     """
     This class represents a Multi-User Chatroom.
     """
 
     def __init__(self, name, bot):
         """
-            :param name:
-                The name of the room
-            """
-        super().__init__(name, bot)
+        :param name:
+            The name of the room
+        """
+        self.name = name
         self.hypchat = bot.conn.hypchat
+        self.xep0045 = bot.conn.client.plugin['xep_0045']
+        self._bot = bot
 
     @property
     def room(self):
@@ -284,7 +292,7 @@ class HipChatMUCRoom(XMPPMUCRoom):
         participants = self.room.participants(expand="items")['items']
         occupants = []
         for p in participants:
-            occupants.append(HipChatMUCOccupant(p))
+            occupants.append(HipChatRoomOccupant(p))
         return occupants
 
     def invite(self, *args):
@@ -349,7 +357,7 @@ class HipchatClient(XMPPConnection):
 
         See also: https://www.hipchat.com/docs/apiv2/method/get_all_users
         """
-        result = self.hypchat.users(expand='items')
+        result = self.hypchat.users(guests=True)
         users = result['items']
         next_link = 'next' in result['links']
         while next_link:
@@ -360,6 +368,9 @@ class HipchatClient(XMPPConnection):
 
 
 class HipchatBackend(XMPPBackend):
+    room_factory = HipChatRoom
+    roomoccupant_factory = HipChatRoomOccupant
+
     def __init__(self, config):
         self.api_token = config.BOT_IDENTITY['token']
         self.api_endpoint = config.BOT_IDENTITY.get('endpoint', None)
@@ -393,7 +404,7 @@ class HipchatBackend(XMPPBackend):
         Return a list of rooms the bot is currently in.
 
         :returns:
-            A list of :class:`~HipChatMUCRoom` instances.
+            A list of :class:`~HipChatRoom` instances.
         """
         xep0045 = self.conn.client.plugin['xep_0045']
         rooms = {}
@@ -403,9 +414,13 @@ class HipchatBackend(XMPPBackend):
 
         joined_rooms = []
         for room in xep0045.getJoinedRooms():
-            joined_rooms.append(HipChatMUCRoom(rooms[room], self))
+            try:
+                joined_rooms.append(HipChatRoom(rooms[room], self))
+            except KeyError:
+                pass
         return joined_rooms
 
+    @lru_cache(1024)
     def query_room(self, room):
         """
         Query a room for information.
@@ -413,7 +428,7 @@ class HipchatBackend(XMPPBackend):
         :param room:
             The name (preferred) or XMPP JID of the room to query for.
         :returns:
-            An instance of :class:`~HipChatMUCRoom`.
+            An instance of :class:`~HipChatRoom`.
         """
         if room.endswith('@conf.hipchat.com'):
             log.debug("Room specified by JID, looking up room name")
@@ -426,7 +441,35 @@ class HipchatBackend(XMPPBackend):
         else:
             name = room
 
-        return HipChatMUCRoom(name, self)
+        return HipChatRoom(name, self)
+
+    def build_reply(self, mess, text=None, private=False):
+        response = super().build_reply(mess=mess, text=text, private=private)
+        if mess.is_group and mess.frm == response.to:
+            # HipChat violates the XMPP spec :( This results in a valid XMPP JID
+            # but HipChat mangles them into stuff like
+            # "132302_961351@chat.hipchat.com/none||proxy|pubproxy-b100.hipchat.com|5292"
+            # so we request the user's proper JID through their API and use that here
+            # so that private responses originating from a room (IE, DIVERT_TO_PRIVATE)
+            # work correctly.
+            node, domain, resource = split_identifier(self.username_to_jid(response.to.client))
+            response.to = XMPPPerson(node=node, domain=domain, resource=resource)
+        return response
+
+    @lru_cache(1024)
+    def username_to_jid(self, username):
+        """
+        Convert a HipChat username to their JID
+        """
+        try:
+            user = [u for u in self.conn.users if u['name'] == username][0]
+            userdetail = self.conn.hypchat.get_user("%s" % user['id'])
+            return userdetail['xmpp_jid']
+        except IndexError:
+            return None
 
     def prefix_groupchat_reply(self, message, identifier):
-        message.body = '@{0} {1}'.format(identifier.nick, message.body)
+        message.body = '@{0}: {1}'.format(identifier.nick, message.body)
+
+    def __hash__(self):
+        return 0  # it is a singleton anyway
