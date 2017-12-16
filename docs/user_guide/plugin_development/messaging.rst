@@ -64,7 +64,7 @@ Inside this directory, you can place Markdown templates (with a
 *.md* extension) in place of the content you wish to show. For
 example this *hello.md*:
 
-.. code-block:: python
+.. code-block:: jinja
 
     Hello, {{name}}!
 
@@ -107,6 +107,33 @@ like so:
             response = tenv().get_template('hello.md').render(name=args)
             self.send(msg.frm, response)
 
+
+Cards
+-----
+
+Errbot cards are a canned format for notifications. It is possible to use this format to map to some native format in
+backends like Slack (Attachment) or Hipchat (Cards).
+
+Similar to a `self.send()` you can use :func:`~errbot.botplugin.BotPlugin.send_card` to send a card.
+
+The following code demonstrate the various available fields.
+
+.. code-block:: python
+
+    from errbot import BotPlugin, botcmd
+
+    class Travel(BotPlugin):
+        @botcmd
+        def hello_card(self, msg, args):
+            """Say a card in the chatroom."""
+            self.send_card(title='Title + Body',
+                           body='text body to put in the card',
+                           thumbnail='https://raw.githubusercontent.com/errbotio/errbot/master/docs/_static/errbot.png',
+                           image='https://www.google.com/images/branding/googlelogo/2x/googlelogo_color_272x92dp.png',
+                           link='http://www.google.com',
+                           fields=(('First Key','Value1'), ('Second Key','Value2')),
+                           color='red',
+                           in_reply_to=msg)
 
 Trigger a callback with every message received
 ----------------------------------------------

@@ -1,15 +1,14 @@
-import ast
 import logging
 import os
 import shutil
 import subprocess
-import urllib.request
 from collections import namedtuple
 from datetime import timedelta, datetime
 from os import path
-from tarfile import TarFile
+import tarfile
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
+from urllib.parse import urlparse
 
 import json
 
@@ -17,13 +16,9 @@ import re
 
 from errbot.plugin_manager import check_dependencies
 from errbot.storage import StoreMixin
-from .utils import PY2, which, compat_str
+from .utils import ON_WINDOWS
 
 log = logging.getLogger(__name__)
-
-
-def timestamp(dt):
-    return (dt - datetime(1970, 1, 1)).total_seconds() if PY2 else dt.timestamp()
 
 
 def human_name_for_git_url(url):
@@ -34,11 +29,11 @@ def human_name_for_git_url(url):
     return str('/'.join(s))
 
 
-INSTALLED_REPOS = b'installed_repos' if PY2 else 'installed_repos'
+INSTALLED_REPOS = 'installed_repos'
 
 REPO_INDEXES_CHECK_INTERVAL = timedelta(hours=1)
 
-REPO_INDEX = b'repo_index' if PY2 else 'repo_index'
+REPO_INDEX = 'repo_index'
 LAST_UPDATE = 'last_update'
 
 RepoEntry = namedtuple('RepoEntry', 'entry_name, name, python, repo, path, avatar_url, documentation')
@@ -66,6 +61,26 @@ def tokenizeJsonEntry(json_dict):
     return set(find_words.findall(' '.join((word.lower() for word in json_dict.values()))))
 
 
+def which(program):
+    if ON_WINDOWS:
+        program += '.exe'
+
+    def is_exe(file_path):
+        return os.path.isfile(file_path) and os.access(file_path, os.X_OK)
+
+    fpath, fname = os.path.split(program)
+    if fpath:
+        if is_exe(program):
+            return program
+    else:
+        for path in os.environ["PATH"].split(os.pathsep):
+            exe_file = os.path.join(path, program)
+            if is_exe(exe_file):
+                return exe_file
+
+    return None
+
+
 class BotRepoManager(StoreMixin):
     """
     Manages the repo list, git clones/updates or the repos.
@@ -77,7 +92,7 @@ class BotRepoManager(StoreMixin):
         :param plugin_dir: where on disk it will git clone the repos.
         :param plugin_indexes: a list of URL / path to get the json repo index.
         """
-        super()
+        super().__init__()
         self.plugin_indexes = plugin_indexes
         self.storage_plugin = storage_plugin
         self.plugin_dir = plugin_dir
@@ -89,30 +104,30 @@ class BotRepoManager(StoreMixin):
     def check_for_index_update(self):
         if REPO_INDEX not in self:
             log.info('No repo index, creating it.')
-            self[REPO_INDEX] = {LAST_UPDATE: 0}
+            self.index_update()
+            return
 
         if datetime.fromtimestamp(self[REPO_INDEX][LAST_UPDATE]) < datetime.now() - REPO_INDEXES_CHECK_INTERVAL:
             log.info('Index is too old, update it.')
             self.index_update()
 
     def index_update(self):
-        index = {LAST_UPDATE: timestamp(datetime.now())}
+        index = {LAST_UPDATE: datetime.now().timestamp()}
         for source in reversed(self.plugin_indexes):
-            src_file = None
             try:
-                if source.startswith('http'):
-                    log.debug('Update from remote source %s...', source)
-                    src_file = urlopen(url=source, timeout=10)
+                if urlparse(source).scheme in ('http', 'https'):
+                    with urlopen(url=source, timeout=10) as request:  # nosec
+                        log.debug('Update from remote source %s...', source)
+                        encoding = request.headers.get_content_charset()
+                        content = request.read().decode(encoding if encoding else 'utf-8')
                 else:
-                    log.debug('Update from local source %s...', source)
-                    src_file = open(source, 'r')
-                index.update(json.loads(compat_str(src_file.read())))
+                    with open(source, encoding='utf-8', mode='r') as src_file:
+                        log.debug('Update from local source %s...', source)
+                        content = src_file.read()
+                index.update(json.loads(content))
             except (HTTPError, URLError, IOError):
                 log.exception('Could not update from source %s, keep the index as it is.', source)
                 break
-            finally:
-                if src_file:
-                    src_file.close()
         else:
             # nothing failed so ok, we can store the index.
             self[REPO_INDEX] = index
@@ -120,7 +135,7 @@ class BotRepoManager(StoreMixin):
 
     def get_repo_from_index(self, repo_name):
         """
-        Retreive the list of plugins for the repo_name from the index.
+        Retrieve the list of plugins for the repo_name from the index.
 
         :param repo_name: the name of hte repo
         :return: a list of RepoEntry
@@ -186,10 +201,11 @@ class BotRepoManager(StoreMixin):
         if repo in self[REPO_INDEX]:
             human_name = repo
             repo_url = next(iter(self[REPO_INDEX][repo].values()))['repo']
-        else:
+        elif not repo.endswith('tar.gz'):
             # This is a repo url, make up a plugin definition for it
-            # TODO read the definition if possible.
             human_name = human_name_for_git_url(repo)
+            repo_url = repo
+        else:
             repo_url = repo
 
         git_path = which('git')
@@ -199,10 +215,11 @@ class BotRepoManager(StoreMixin):
 
         # TODO: Update download path of plugin.
         if repo_url.endswith('tar.gz'):
-            tar = TarFile(fileobj=urllib.urlopen(repo_url))
+            fo = urlopen(repo_url)  # nosec
+            tar = tarfile.open(fileobj=fo, mode='r:gz')
             tar.extractall(path=self.plugin_dir)
-            s = repo_url.split(':')[-1].split('/')[-2:]
-            human_name = human_name or '/'.join(s).rstrip('.tar.gz')
+            s = repo_url.split(':')[-1].split('/')[-1]
+            human_name = s[:-len('.tar.gz')]
         else:
             human_name = human_name or human_name_for_git_url(repo_url)
             p = subprocess.Popen([git_path, 'clone', repo_url, human_name], cwd=self.plugin_dir, stdout=subprocess.PIPE,
@@ -234,7 +251,7 @@ class BotRepoManager(StoreMixin):
             err = p.stderr.read().strip().decode('utf-8')
             if err:
                 feedback += err + '\n' + '-' * 50 + '\n'
-            dep_err = check_dependencies(d)
+            dep_err, missing_pkgs = check_dependencies(d)
             if dep_err:
                 feedback += dep_err + '\n'
             yield d, not p.wait(), feedback

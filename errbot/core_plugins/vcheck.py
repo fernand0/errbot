@@ -1,6 +1,8 @@
-from urllib.request import urlopen
 from urllib.error import HTTPError, URLError
 import threading
+import sys
+
+import requests
 
 from errbot import BotPlugin
 from errbot.utils import version2array
@@ -10,6 +12,8 @@ HOME = 'http://version.errbot.io/'
 
 installed_version = version2array(VERSION)
 
+PY_VERSION = '.'.join(str(e) for e in sys.version_info[:3])
+
 
 class VersionChecker(BotPlugin):
 
@@ -17,7 +21,7 @@ class VersionChecker(BotPlugin):
     activated = False
 
     def activate(self):
-        if self.mode not in ('null', 'test', 'Dummy'):  # skip in all test confs.
+        if self.mode not in ('null', 'test', 'Dummy', 'text'):  # skip in all test confs.
             self.activated = True
             self.version_check()  # once at startup anyway
             self.start_poller(3600 * 24, self.version_check)  # once every 24H
@@ -32,16 +36,15 @@ class VersionChecker(BotPlugin):
     def _async_vcheck(self):
         # noinspection PyBroadException
         try:
-            current_version_txt = urlopen(url=HOME + '?' + VERSION,
-                                          timeout=10).read().decode("utf-8").strip()
+            current_version_txt = requests.get(HOME, params={'errbot': VERSION, 'python': PY_VERSION}).text.strip()
             self.log.debug("Tested current Errbot version and it is " + current_version_txt)
             current_version = version2array(current_version_txt)
             if installed_version < current_version:
                 self.log.debug('A new version %s has been found, notify the admins !' % current_version)
                 self.warn_admins(
-                    ('Version {0} of err is available. http://pypi.python.org/pypi/errbot/{0}.'
+                    'Version {0} of Errbot is available. http://pypi.python.org/pypi/errbot/{0}.'
                     ' You can disable this check '
-                    'by doing %splugin blacklist VersionChecker'%self._bot.prefix).format(current_version_txt)
+                    'by doing {1}plugin blacklist VersionChecker'.format(current_version_txt, self._bot.prefix)
                 )
         except (HTTPError, URLError):
             self.log.info('Could not establish connection to retrieve latest version.')

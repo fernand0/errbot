@@ -1,5 +1,7 @@
-.venv
 *.pyc
+__pycache__
+.venv
+/.coafile
 /.idea
 /atlassian-ide-plugin.xml
 /.settings
@@ -33,3 +35,5 @@ nohup.out
 legacy/dist/
 legacy/err.egg-info/
 
+# tox
+.tox

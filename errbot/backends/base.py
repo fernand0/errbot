@@ -2,26 +2,10 @@ import io
 import logging
 import random
 import time
-from typing import Any, Mapping, BinaryIO, List, Union, Sequence
-from abc import abstractproperty, abstractmethod
+from typing import Any, Mapping, BinaryIO, List, Sequence, Tuple
+from abc import ABC, abstractmethod
 from collections import deque, defaultdict
 
-import inspect
-
-try:
-    from abc import ABC
-except ImportError:
-    #  3.3 compatibility
-    from abc import ABCMeta
-
-    class ABC(metaclass=ABCMeta):
-        """Helper class that provides a standard way to create an ABC using
-        inheritance.
-        """
-        pass
-
-
-from errbot.utils import compat_str, deprecated
 
 # Can't use __name__ because of Yapsy
 log = logging.getLogger('errbot.backends.base')
@@ -45,48 +29,56 @@ class Person(Identifier):
      to make an identifier from a String.
     """
 
-    @abstractproperty
+    @property
+    @abstractmethod
     def person(self) -> str:
         """
         :return: a backend specific unique identifier representing the person you are talking to.
         """
         pass
 
-    @abstractproperty
+    @property
+    @abstractmethod
     def client(self) -> str:
         """
         :return: a backend specific unique identifier representing the device or client the person is using to talk.
         """
         pass
 
-    @abstractproperty
+    @property
+    @abstractmethod
     def nick(self) -> str:
         """
         :return: a backend specific nick returning the nickname of this person if available.
         """
         pass
 
-    @abstractproperty
+    @property
+    @abstractmethod
     def aclattr(self) -> str:
         """
         :return: returns the unique identifier that will be used for ACL matches.
         """
         pass
 
-    @abstractproperty
+    @property
+    @abstractmethod
     def fullname(self) -> str:
         """
         Some backends have the full name of a user.
+
         :return: the fullname of this user if available.
         """
         pass
 
 
 class RoomOccupant(Identifier):
-    @abstractproperty
+    @property
+    @abstractmethod
     def room(self) -> Any:  # this is oom defined below
         """
         Some backends have the full name of a user.
+
         :return: the fullname of this user if available.
         """
         pass
@@ -226,30 +218,43 @@ class Message(object):
     A chat message.
 
     This class represents chat messages that are sent or received by
-    the bot. It is modeled after XMPP messages so not all methods
-    make sense in the context of other back-ends.
+    the bot.
     """
 
     def __init__(self,
                  body: str='',
                  frm: Identifier=None,
                  to: Identifier=None,
+                 parent: 'Message'=None,
                  delayed: bool=False,
-                 extras: Mapping=None):
+                 extras: Mapping=None,
+                 flow=None):
         """
         :param body:
-            The plaintext body of the message.
+            The markdown body of the message.
         :param extras:
             Extra data attached by a backend
+        :param flow:
+            The flow in which this message has been triggered.
+        :param parent:
+            The parent message of this message in a thread. (Not supported by all backends)
         """
-        self._body = compat_str(body)
+        self._body = body
         self._from = frm
         self._to = to
+        self._parent = parent
         self._delayed = delayed
         self._extras = extras or dict()
+        self._flow = flow
+
+        # Convenience shortcut to the flow context
+        if flow:
+            self.ctx = flow.ctx
+        else:
+            self.ctx = {}
 
     def clone(self):
-        return Message(self._body, self._from, self._to, self._delayed, self.extras)
+        return Message(self._body, self._from, self._to, self._parent, self._delayed, self.extras)
 
     @property
     def to(self) -> Identifier:
@@ -315,8 +320,26 @@ class Message(object):
         self._delayed = delayed
 
     @property
+    def parent(self):
+        return self._parent
+
+    @parent.setter
+    def parent(self, parent: 'Message'):
+        self._parent = parent
+
+    @property
     def extras(self) -> Mapping:
         return self._extras
+
+    @property
+    def flow(self):
+        """
+        Get the conversation flow for this message.
+
+        :returns:
+            A :class:`~errbot.Flow`
+        """
+        return self._from
 
     def __str__(self):
         return self._body
@@ -330,10 +353,85 @@ class Message(object):
         return isinstance(self.to, Room)
 
     @property
-    def type(self):
-        msg = ' {0.filename}:{0.lineno} : '.format(inspect.getframeinfo(inspect.currentframe().f_back))
-        log.warn(msg + 'msg.type is deprecated and will be removed soon ! Use msg.is_direct or msg.is_group.')
-        return 'chat' if self.is_direct else 'groupchat'
+    def is_threaded(self) -> bool:
+        return self._parent is not None
+
+
+class Card(Message):
+    """
+        Card is a special type of preformatted message. If it matches with a backend similar concept like on
+        Slack or Hipchat it will be rendered natively, otherwise it will be sent as a regular message formatted with
+        the card.md template.
+    """
+    def __init__(self,
+                 body: str='',
+                 frm: Identifier=None,
+                 to: Identifier=None,
+                 parent: Message=None,
+                 summary: str=None,
+                 title: str='',
+                 link: str=None,
+                 image: str=None,
+                 thumbnail: str=None,
+                 color: str=None,
+                 fields: Tuple[Tuple[str, str]]=()):
+        """
+        Creates a Card.
+        :param body: main text of the card in markdown.
+        :param frm: the card is sent from this identifier.
+        :param to: the card is sent to this identifier (Room, RoomOccupant, Person...).
+        :param parent: the parent message this card replies to. (threads the message if the backend supports it).
+        :param summary: (optional) One liner summary of the card, possibly collapsed to it.
+        :param title: (optional) Title possibly linking.
+        :param link: (optional) url the title link is pointing to.
+        :param image: (optional) link to the main image of the card.
+        :param thumbnail: (optional) link to an icon / thumbnail.
+        :param color: (optional) background color or color indicator.
+        :param fields: (optional) a tuple of (key, value) pairs.
+        """
+        super().__init__(body=body, frm=frm, to=to, parent=parent)
+        self._summary = summary
+        self._title = title
+        self._link = link
+        self._image = image
+        self._thumbnail = thumbnail
+        self._color = color
+        self._fields = fields
+
+    @property
+    def summary(self):
+        return self._summary
+
+    @property
+    def title(self):
+        return self._title
+
+    @property
+    def link(self):
+        return self._link
+
+    @property
+    def image(self):
+        return self._image
+
+    @property
+    def thumbnail(self):
+        return self._thumbnail
+
+    @property
+    def color(self):
+        return self._color
+
+    @property
+    def text_color(self):
+        if self._color in ('black', 'blue'):
+            return 'white'
+        return 'black'
+
+    @property
+    def fields(self):
+        return self._fields
+
 
 ONLINE = 'online'
 OFFLINE = 'offline'
@@ -362,18 +460,10 @@ class Presence(object):
         self._message = message
 
     @property
-    def nick(self) -> str:
-        """ Returns a plain string of the presence nick.
-            (In some chatroom implementations, you cannot know the real identifier
-            of a person in it).
-            Can return None but then identifier won't be None.
+    def identifier(self) -> Identifier:
         """
-        return self._identifier.nick
-
-    @property
-    def occupant(self) -> RoomOccupant:
-        """ Returns the identifier of the event.
-            Can be None *only* if chatroom is not None
+        Identifier for whom its status changed. It can be a RoomOccupant or a Person.
+        :return: the person or roomOccupant
         """
         return self._identifier
 
@@ -396,18 +486,17 @@ class Presence(object):
 
     def __str__(self):
         response = ''
-        if self._nick:
-            response += 'Nick:%s ' % self._nick
         if self._identifier:
-            response += 'Idd:%s ' % self._identifier
+            response += 'identifier: "%s" ' % self._identifier
         if self._status:
-            response += 'Status:%s ' % self._status
+            response += 'status: "%s" ' % self._status
         if self._message:
-            response += 'Msg:%s ' % self._message
+            response += 'message: "%s" ' % self._message
         return response
 
     def __unicode__(self):
         return str(self.__str__())
+
 
 STREAM_WAITING_TO_START = 'pending'
 STREAM_TRANSFER_IN_PROGRESS = 'in progress'
@@ -517,7 +606,7 @@ class Stream(io.BufferedReader):
             raise ValueError("Invalid state, the stream is not in progress.")
         self._status = STREAM_SUCCESSFULLY_TRANSFERED
 
-    def clone(self, new_fsource: BinaryIO) -> Any:  # this is obviously a Stream but the compiler doesn't like it.
+    def clone(self, new_fsource: BinaryIO) -> 'Stream':
         """
             Creates a clone and with an alternative stream
         """
@@ -551,7 +640,7 @@ class Backend(ABC):
         self._reconnection_jitter = (0, 3)    # Random jitter added to delay (min, max)
 
     @abstractmethod
-    def send_message(self, mess: Message) -> None:
+    def send_message(self, msg: Message) -> None:
         """Should be overridden by backends with a super().send_message() call."""
 
     @abstractmethod
@@ -559,7 +648,7 @@ class Backend(ABC):
         """Signal a presence change for the bot. Should be overridden by backends with a super().send_message() call."""
 
     @abstractmethod
-    def build_reply(self, mess: Message, text: str=None, private: bool=False):
+    def build_reply(self, msg: Message, text: str=None, private: bool=False, threaded: bool=False):
         """ Should be implemented by the backend """
 
     @abstractmethod
@@ -599,7 +688,7 @@ class Backend(ABC):
             except KeyboardInterrupt:
                 log.info("Interrupt received, shutting down..")
                 break
-            except:
+            except Exception:
                 log.exception("Exception occurred in serve_once:")
 
             log.info(
@@ -623,7 +712,7 @@ class Backend(ABC):
         self._reconnection_delay *= self._reconnection_multiplier
         if self._reconnection_delay > self._reconnection_max_delay:
             self._reconnection_delay = self._reconnection_max_delay
-        self._reconnection_delay += random.uniform(*self._reconnection_jitter)
+        self._reconnection_delay += random.uniform(*self._reconnection_jitter)  # nosec
 
     def reset_reconnection_count(self) -> None:
         """
@@ -649,6 +738,18 @@ class Backend(ABC):
     @abstractmethod
     def build_identifier(self, text_representation: str) -> Identifier:
         pass
+
+    def is_from_self(self, msg: Message) -> bool:
+        """
+        Needs to be overridden to check if the incoming message is from the bot itself.
+
+        :param msg: The incoming message.
+        :return: True if the message is coming from the bot.
+        """
+        # Default implementation (XMPP-like check using an extra config).
+        # Most of the backends should have a better way to determine this.
+        return (msg.is_direct and msg.frm == self.bot_identifier) or \
+               (msg.is_group and msg.frm.nick == self.bot_config.CHATROOM_FN)
 
     def serve_once(self) -> None:
         """
@@ -687,11 +788,13 @@ class Backend(ABC):
     def disconnect_callback(self) -> None:
         pass
 
-    @abstractproperty
+    @property
+    @abstractmethod
     def mode(self) -> str:
         pass
 
-    @abstractproperty
+    @property
+    @abstractmethod
     def rooms(self) -> Sequence[Room]:
         """
         Return a list of rooms the bot is currently in.

@@ -5,8 +5,9 @@ from markdown import Markdown
 from markdown.extensions.extra import ExtraExtension
 
 # Attribute regexp looks for extendend syntax: {: ... }
-ATTR_RE = re.compile(r'\{\:([^\}]*)\}')
-MD_ESCAPE_RE = re.compile('|'.join(re.escape(c) for c in Markdown.ESCAPED_CHARS))
+ATTR_RE = re.compile(r'{:([^}]*)}')
+MD_ESCAPE_RE = re.compile('|'.join(re.escape(c) for c in ('\\', '`', '*', '_', '{', '}', '[', ']',
+                                                          '(', ')', '>', '#', '+', '-', '.', '!')))
 
 # Here are few helpers to simplify the conversion from markdown to various
 # backend formats.
@@ -20,7 +21,7 @@ def ansi():
 
     ansi_txt = md_converter.convert(md_txt)
     """
-    from .ansi import AnsiExtension
+    from .ansiext import AnsiExtension
     md = Markdown(output_format='ansi', extensions=[ExtraExtension(), AnsiExtension()])
     md.stripTopLevelTags = False
     return md
@@ -34,7 +35,7 @@ def text():
 
     pure_text = md_converter.convert(md_txt)
     """
-    from .ansi import AnsiExtension
+    from .ansiext import AnsiExtension
     md = Markdown(output_format='text', extensions=[ExtraExtension(), AnsiExtension()])
     md.stripTopLevelTags = False
     return md
@@ -50,7 +51,7 @@ def imtext():
 
     im_text = md_converter.convert(md_txt)
     """
-    from .ansi import AnsiExtension
+    from .ansiext import AnsiExtension
     md = Markdown(output_format='imtext', extensions=[ExtraExtension(), AnsiExtension()])
     md.stripTopLevelTags = False
     return md

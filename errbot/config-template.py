@@ -1,8 +1,8 @@
 ##########################################################################
 #                                                                        #
 #  This is the config-template for Err. This file should be copied and   #
-#  renamed to config.py, then modified as you see fit to run Err the way #
-#  you like it.                                                          #
+#  renamed to config.py, then modified as you see fit to run Errbot      #
+#  the way you like it.                                                  #
 #                                                                        #
 #  As this is a regular Python file, note that you can do variable       #
 #  assignments and the likes as usual. This can be useful for example if #
@@ -22,7 +22,7 @@ import logging
 # https://pypi.python.org/pypi/keyring
 
 ##########################################################################
-# Core Err configuration                                                 #
+# Core Errbot configuration                                              #
 ##########################################################################
 
 # BACKEND selection.
@@ -88,7 +88,7 @@ BOT_DATA_DIR = '/var/lib/err'
 BOT_EXTRA_PLUGIN_DIR = None
 
 # If you use an external backend as a plugin,
-# this is where you tell err where to find it.
+# this is where you tell Errbot where to find it.
 # BOT_EXTRA_BACKEND_DIR = '/opt/errbackends'
 
 # If you want only a subset of the core plugins that are bundled with errbot, you can specify them here.
@@ -96,10 +96,16 @@ BOT_EXTRA_PLUGIN_DIR = None
 # For example CORE_PLUGINS = ('ACLs', 'Backup', 'Help') you get those names from the .plug files Name entry.
 # For absolutely no plug: CORE_PLUGINS = ()
 
+# Defines an order in which the plugins are getting their callbacks. Useful if you want to have plugins do
+# pre- or post-processing on messages.
+# The 'None' tuple entry represents all the plugins that aren't to be explicitly ordered. For example, if
+# you want 'A' to run first, then everything else but 'B', then 'B', you would use ('A', None, 'B').
+PLUGINS_CALLBACK_ORDER = (None, )
+
 # Should plugin dependencies be installed automatically? If this is true
-# then Err will use pip to install any missing dependencies automatically.
+# then Errbot will use pip to install any missing dependencies automatically.
 #
-# If you have installed Err in a virtualenv, this will run the equivalent
+# If you have installed Errbot in a virtualenv, this will run the equivalent
 # of `pip install -r requirements.txt`.
 # If no virtualenv is detected, the equivalent of `pip install --user -r
 # requirements.txt` is used to ensure the package(s) is/are only installed for
@@ -125,10 +131,13 @@ BOT_LOG_SENTRY = False
 SENTRY_DSN = ''
 SENTRY_LOGLEVEL = BOT_LOG_LEVEL
 
-# Execute commands in asynchronous mode. In this mode, Err will spawn 3
+# Execute commands in asynchronous mode. In this mode, Errbot will spawn 10
 # separate threads to handle commands, instead of blocking on each
 # single command.
-BOT_ASYNC = True
+# BOT_ASYNC = True
+
+# Size of the thread pool for the asynchronous mode.
+# BOT_ASYNC_POOLSIZE = 10
 
 ##########################################################################
 # Account and chatroom (MUC) configuration                               #
@@ -162,15 +171,15 @@ BOT_IDENTITY = {
     # 'server': ('host.domain.tld',5222), # server override
 
     ## HipChat mode (Comment the above if using this mode)
-    # 'username' : '12345_123456@chat.hipchat.com',
-    # 'password' : 'changeme',
+    # 'username': '12345_123456@chat.hipchat.com',
+    # 'password': 'changeme',
     ## Group admins can create/view tokens on the settings page after logging
     ## in on HipChat's website
-    # 'token'    : 'ed4b74d62833267d98aa99f312ff04',
+    # 'token': 'ed4b74d62833267d98aa99f312ff04',
     ## If you're using HipChat server (self-hosted HipChat) then you should set
     ## the endpoint below. If you don't use HipChat server but use the hosted version
     ## of HipChat then you may leave this commented out.
-    # 'endpoint' : 'https://api.hipchat.com'
+    # 'endpoint': 'https://api.hipchat.com'
 
     ## Slack mode (comment the others above if using this mode)
     # 'token': 'xoxb-4426949411-aEM7...',
@@ -179,10 +188,10 @@ BOT_IDENTITY = {
     # 'token': '103419016:AAbcd1234...',
 
     ## IRC mode (Comment the others above if using this mode)
-    # 'nickname' : 'err-chatbot',
-    # 'username' : 'err-chatbot',    # optional, defaults to nickname if omitted
-    # 'password' : None,             # optional
-    # 'server' : 'irc.freenode.net',
+    # 'nickname': 'err-chatbot',
+    # 'username': 'err-chatbot',    # optional, defaults to nickname if omitted
+    # 'password': None,             # optional
+    # 'server': 'irc.freenode.net',
     # 'port': 6667,                  # optional
     # 'ssl': False,                  # optional
     # 'ipv6': False,                 # optional
@@ -201,18 +210,21 @@ BOT_IDENTITY = {
 # would be considered an admin if setting '*@localhost'.
 BOT_ADMINS = ('gbin@localhost',)
 
+# Set of admins that wish to receive administrative bot notifications.
+#BOT_ADMINS_NOTIFICATIONS = ()
+
 # Chatrooms your bot should join on startup. For the IRC backend you
 # should include the # sign here. For XMPP rooms that are password
 # protected, you can specify another tuple here instead of a string,
 # using the format (RoomName, Password).
-CHATROOM_PRESENCE = ('err@conference.server.tld',)
+# CHATROOM_PRESENCE = ('err@conference.server.tld',)
 
 # The FullName, or nickname, your bot should use. What you set here will
-# be the nickname that Err shows in chatrooms. Note that some XMPP
+# be the nickname that Errbot shows in chatrooms. Note that some XMPP
 # implementations, notably HipChat, are very picky about what name you
 # use. In the case of HipChat, make sure this matches exactly with the
 # name you gave the user.
-CHATROOM_FN = 'Err'
+# CHATROOM_FN = 'Errbot'
 
 ##########################################################################
 # Prefix configuration                                                   #
@@ -225,8 +237,8 @@ CHATROOM_FN = 'Err'
 # If the prefix is changed from the default, the help strings will be
 # automatically adjusted for you.
 #
-BOT_PREFIX = '!'
-
+# BOT_PREFIX = '!'
+#
 # Uncomment the following and set it to True if you want the prefix to be
 # optional for normal chat.
 # (Meaning messages sent directly to the bot as opposed to within a MUC)
@@ -305,9 +317,14 @@ BOT_PREFIX = '!'
 # DIVERT_TO_PRIVATE = ('help', 'about', 'status')
 DIVERT_TO_PRIVATE = ()
 
+# A list of commands which should be responded to in a thread if the backend supports it.
+# For example:
+# DIVERT_TO_THREAD = ('help', 'about', 'status')
+DIVERT_TO_THREAD = ()
+
 # Chat relay
 # Can be used to relay one to one message from specific users to the bot
-# to MUCs. This can be useful with XMPP notifiers like for example  the
+# to MUCs. This can be useful with XMPP notifiers like for example the
 # standard Altassian Jira which don't have native support for MUC.
 # For example: CHATROOM_RELAY = {'gbin@localhost' : (_TEST_ROOM,)}
 CHATROOM_RELAY = {}
@@ -343,11 +360,11 @@ REVERSE_CHATROOM_RELAY = {}
 # The default is to try anything:
 #XMPP_FEATURE_MECHANISMS = {}
 # To use only unencrypted plain auth:
-#XMPP_FEATURE_MECHANISMS =  {'use_mech': 'PLAIN', 'unencrypted_plain': True, 'encrypted_plain': False}
+#XMPP_FEATURE_MECHANISMS = {'use_mech': 'PLAIN', 'unencrypted_plain': True, 'encrypted_plain': False}
 
-# Modify the default keep-alive interval. By default, Err will send
+# Modify the default keep-alive interval. By default, Errbot will send
 # some whitespace to the XMPP server every 300 seconds to keep the TCP
-# connection alive. On some servers, or when running Err from behind
+# connection alive. On some servers, or when running Errbot from behind
 # a NAT router, the default might not be fast enough and you will need
 # to set it to a lower value.
 #
@@ -358,6 +375,9 @@ REVERSE_CHATROOM_RELAY = {}
 # try to gradually lower this value until it no longer happens.
 #XMPP_KEEPALIVE_INTERVAL = 300
 
+# Modify default settings for IPv6 usage. This key affect both
+# XMPP and HipChat backend.
+#XMPP_USE_IPV6 = False
 
 # XMPP supports some formatting with XEP-0071 (http://www.xmpp.org/extensions/xep-0071.html).
 # It is disabled by default because XMPP clients support has been found to be spotty.
@@ -386,8 +406,11 @@ REVERSE_CHATROOM_RELAY = {}
 # Allow messages sent in a chatroom to be directed at requester.
 #GROUPCHAT_NICK_PREFIXED = False
 
-# Disables table borders (IRC only for now). You can reenable them switching that to  False
+# Disable table borders, making output more compact (supported only on IRC, Slack and Telegram currently).
 # COMPACT_OUTPUT = True
+
+# Disables the logging output in Text mode and only outputs Ansi.
+# TEXT_DEMO_MODE = False
 
 # Prevent ErrBot from saying anything if the command is unrecognized.
 # SUPPRESS_CMD_NOT_FOUND = False

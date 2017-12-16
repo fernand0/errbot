@@ -12,8 +12,8 @@ import pytest
 from errbot.rendering import text
 from errbot.backends.base import Message, Room, Person, RoomOccupant, ONLINE
 from errbot.core_plugins.wsview import reset_app
-from errbot.errBot import ErrBot
-from errbot.main import setup_bot
+from errbot.core import ErrBot
+from errbot.bootstrap import setup_bot
 
 # Can't use __name__ because of Yapsy
 log = logging.getLogger('errbot.backends.test')
@@ -72,12 +72,14 @@ class TestPerson(Person):
 
     def __unicode__(self):
         if self.client:
-            return self._person + "/" + self._client
-        return self._person
+            return '{}/{}'.format(self._person, self._client)
+        return '{}'.format(self._person)
 
     __str__ = __unicode__
 
     def __eq__(self, other):
+        if not isinstance(other, Person):
+            return False
         return self.person == other.person
 
 
@@ -223,10 +225,14 @@ class TestBackend(ErrBot):
         self.reset_rooms()
         self.md = text()
 
-    def send_message(self, mess):
-        log.info("\n\n\nMESSAGE:\n%s\n\n\n", mess.body)
-        super().send_message(mess)
-        self.outgoing_message_queue.put(self.md.convert(mess.body))
+    def send_message(self, msg):
+        log.info("\n\n\nMESSAGE:\n%s\n\n\n", msg.body)
+        super().send_message(msg)
+        self.outgoing_message_queue.put(self.md.convert(msg.body))
+
+    def send_stream_request(self, user, fsource, name, size, stream_type):
+        # Just dump the stream contents to the message queue
+        self.outgoing_message_queue.put(fsource.read())
 
     def serve_forever(self):
         self.connect_callback()  # notify that the connection occured
@@ -274,10 +280,10 @@ class TestBackend(ErrBot):
     def build_identifier(self, text_representation):
         return TestPerson(text_representation)
 
-    def build_reply(self, mess, text=None, private=False):
+    def build_reply(self, msg, text=None, private=False, threaded=False):
         msg = self.build_message(text)
         msg.frm = self.bot_identifier
-        msg.to = mess.frm
+        msg.to = msg.frm
         return msg
 
     @property
@@ -386,7 +392,7 @@ class TestBot(object):
         """
         if self.bot_thread is not None:
             raise Exception("Bot has already been started")
-        self.bot = setup_bot('Test', self.logger, self.bot_config)
+        self._bot = setup_bot('Test', self.logger, self.bot_config)
         self.bot_thread = Thread(target=self.bot.serve_forever, name='TestBot main thread')
         self.bot_thread.setDaemon(True)
         self.bot_thread.start()
@@ -394,7 +400,16 @@ class TestBot(object):
         self.bot.push_message("!echo ready")
 
         # Ensure bot is fully started and plugins are loaded before returning
-        assert self.bot.pop_message(timeout=60) == "ready"
+        for i in range(60):
+            #  Gobble initial error messages...
+            if self.bot.pop_message(timeout=1) == "ready":
+                break
+        else:
+            raise AssertionError('The "ready" message has not been received (timeout).')
+
+    @property
+    def bot(self) -> ErrBot:
+        return self._bot
 
     def stop(self):
         """
@@ -424,16 +439,25 @@ class TestBot(object):
         """
         return self.bot.push_presence(presence)
 
+    def exec_command(self, command, timeout=5):
+        """ Execute a command and return the first response.
+        This makes more py.test'ist like:
+        assert 'blah' in exec_command('!hello')
+        """
+        self.bot.push_message(command)
+        return self.bot.pop_message(timeout)
+
     def zap_queues(self):
         return self.bot.zap_queues()
 
     def assertCommand(self, command, response, timeout=5):
         """Assert the given command returns the given response"""
         self.bot.push_message(command)
-        assert response in self.bot.pop_message(timeout)
+        msg = self.bot.pop_message(timeout)
+        assert response in msg, "'{}' not in '{}'".format(response, msg)
 
     def assertCommandFound(self, command, timeout=5):
-        """Assert the given command does not exist"""
+        """Assert the given command exists"""
         self.bot.push_message(command)
         assert 'not found' not in self.bot.pop_message(timeout)
 
@@ -476,14 +500,12 @@ class FullStackTest(unittest.TestCase, TestBot):
 
 
 @pytest.fixture
-def testbot(request):
+def testbot(request) -> TestBot:
     """
     Pytest fixture to write tests against a fully functioning bot.
 
     For example, if you wanted to test the builtin `!about` command,
     you could write a test file with the following::
-
-        from errbot.backends.test import testbot
 
         def test_about(testbot):
             testbot.push_message('!about')
@@ -493,17 +515,13 @@ def testbot(request):
     by setting variables at module level or as class attributes (the
     latter taking precedence over the former). For example::
 
-        from errbot.backends.test import testbot
-
         extra_plugin_dir = '/foo/bar'
 
         def test_about(testbot):
-            testbot.pushMessage('!about')
+            testbot.push_message('!about')
             assert "Err version" in testbot.pop_message()
 
     ..or::
-
-        from errbot.backends.test import testbot
 
         extra_plugin_dir = '/foo/bar'
 
@@ -539,7 +557,7 @@ def testbot(request):
 
     kwargs = {}
 
-    for attr, default in (('extra_plugin_dir', None), ('loglevel', logging.DEBUG),):
+    for attr, default in (('extra_plugin_dir', None), ('extra_config', None), ('loglevel', logging.DEBUG),):
         if hasattr(request, 'instance'):
             kwargs[attr] = getattr(request.instance, attr, None)
         if kwargs[attr] is None:

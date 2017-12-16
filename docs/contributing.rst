@@ -7,12 +7,28 @@ involved! Here you can find how best to get started.
 Contributing to Errbot itself
 -----------------------------
 
+Clone Errbot
+~~~~~~~~~~~~
+
 All development on Errbot happens on GitHub_. If you'd like to get involved, just
 fork_ the repository and make changes in your own repo. When you are satisfied
 with your changes, just open a `pull request`_ with us and we'll get it reviewed
 as soon as we can! Depending on our thoughts, we might decide to merge it in
 right away, or we may ask you to change certain parts before we will accept the
 change.
+
+Run Errbot from source
+^^^^^^^^^^^^^^^^^^^^^^
+
+Clone you github fork repo locally and install errbot in development mode from the root of the repo with::
+
+    pip install -e .
+
+From there, anytime you execute `errbot` it will run from the checked out version of Errbot with all your local
+changes taken into account.
+
+Preparing your pull request
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 In order to make the process easy for everyone involved, please follow
 these guidelines as you open a pull request.
@@ -21,9 +37,8 @@ these guidelines as you open a pull request.
 * Split your work up into smaller commits if possible, while making sure each commit
   can still function on its own. Do not commit work-in-progress code - commit it
   once it's working.
-* Run the test-suite before opening your pull request, and make sure all tests pass.
-  You can run the tests with :command:`python run_tests.py` in the root of the
-  repository.
+* Run tox before opening your pull request, and make sure all tests pass.
+  You can install tox with :command:`pip install tox`
 * If you can, please add tests for your code. We know large parts of our codebase
   are missing tests, so we won't reject your code if it lacks tests, though.
 
@@ -49,12 +64,6 @@ described in the previous section, then open a pull request with us.
 .. note::
     You must do this with Python 3, Python 2 is unsupported.
 
-Contributing plugins
---------------------
-
-If you've written a cool plugin of your own and would like to see it included in
-the repositories, please send us a pull request after adding it to repos.py_.
-
 Issues and feature requests
 ===========================
 
@@ -68,8 +77,13 @@ easier for us to figure out what is going on, as well.
 Getting help
 ============
 
-For general help with Errbot, we'd prefer you post in our `Google Plus community`_
-or even better directly on the chat from the link below.
+The best place to get help if you get stuck with anything is to ask for advice
+on our Gitter_ chat room. If nobody is around to help you, opening an issue on
+the `issue tracker`_ is your next best option.
+
+If you have a code-related question concerning (plugin) development it's best
+to ask your question on Stack Overflow, `tagged errbot
+<http://stackoverflow.com/questions/tagged/errbot>`_.
 
 .. _GitHub: https://github.com/errbotio/errbot
 .. _fork: https://github.com/errbotio/errbot/fork
@@ -79,4 +93,4 @@ or even better directly on the chat from the link below.
 .. _docs: https://github.com/errbotio/errbot/tree/master/docs/
 .. _repos.py: https://github.com/errbotio/errbot/blob/master/errbot/repos.py
 .. _`issue tracker`: https://github.com/errbotio/errbot/issues/
-.. _`Google Plus community`: https://plus.google.com/communities/117050256560830486288
+.. _Gitter: https://gitter.im/errbotio/errbot

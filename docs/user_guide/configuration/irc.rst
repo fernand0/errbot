@@ -5,6 +5,13 @@ This backend lets you connect to any IRC server.
 To select this backend,
 set `BACKEND = 'IRC'`.
 
+Extra Dependencies
+------------------
+
+You need to install this dependency before using Errbot with IRC::
+
+    pip install irc
+
 
 Account setup
 -------------
@@ -61,7 +68,7 @@ For example: `CHATROOM_PRESENCE = ('#errbotio',)`
 Flood protection
 ----------------
 
-Many IRC servers have floop protection enabled,
+Many IRC servers have flood protection enabled,
 which means the bot will get kicked out of a channel
 when sending too many messages
 in too short a time.

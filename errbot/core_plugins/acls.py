@@ -1,13 +1,12 @@
 import fnmatch
 from errbot import BotPlugin, cmdfilter
 from errbot.backends.base import RoomOccupant
-from errbot.utils import compat_str
-
 
 BLOCK_COMMAND = (None, None, None)
 
 
 def get_acl_usr(msg):
+    """Return the ACL attribute of the sender of the given message"""
     if hasattr(msg.frm, 'aclattr'):  # if the identity requires a special field to be used for acl
         return msg.frm.aclattr
     return msg.frm.person  # default
@@ -18,7 +17,11 @@ def glob(text, patterns):
     Match text against the list of patterns according to unix glob rules.
     Return True if a match is found, False otherwise.
     """
-    return any(fnmatch.fnmatchcase(compat_str(text), compat_str(pattern)) for pattern in patterns)
+    if isinstance(patterns, str):
+        patterns = (patterns,)
+    if not isinstance(text, str):
+        text = str(text)
+    return any(fnmatch.fnmatchcase(text, str(pattern)) for pattern in patterns)
 
 
 def ciglob(text, patterns):
@@ -28,11 +31,15 @@ def ciglob(text, patterns):
     Match text against the list of patterns according to unix glob rules.
     Return True if a match is found, False otherwise.
     """
+    if isinstance(patterns, str):
+        patterns = (patterns,)
     return glob(text.lower(), [p.lower() for p in patterns])
 
 
 class ACLS(BotPlugin):
-    """ This checks commands for potential ACL violations.
+    """
+    This plugin implements access controls for commands, allowing them to be
+    restricted via various rules.
     """
 
     def access_denied(self, msg, reason, dry_run):
@@ -43,19 +50,17 @@ class ACLS(BotPlugin):
     @cmdfilter
     def acls(self, msg, cmd, args, dry_run):
         """
-        Check command against ACL rules
+        Check command against ACL rules as defined in the bot configuration.
 
-        :param msg: The original message the commands is coming from.
-        :param cmd: The command name
-        :param args: Its arguments.
-        :param dry_run: pass True to not act on the check (messages / deferred auth etc.)
-
-        Return None, None, None if the command is blocked or deferred
+        :param msg: The original chat message.
+        :param cmd: The command name itself.
+        :param args: Arguments passed to the command.
+        :param dry_run: True when this is a dry-run.
         """
         self.log.debug("Check %s for ACLs." % cmd)
         f = self._bot.all_commands[cmd]
         cmd_str = "{plugin}:{command}".format(
-            plugin=type(f.__self__).__name__,
+            plugin=f.__self__.name,
             command=cmd,
         )
 
@@ -88,9 +93,9 @@ class ACLS(BotPlugin):
                 return self.access_denied(msg, "You're not allowed to access this command from this room", dry_run)
         elif 'allowprivate' in acl and acl['allowprivate'] is False:
             return self.access_denied(
-                    msg,
-                    "You're not allowed to access this command via private message to me",
-                    dry_run
+                msg,
+                "You're not allowed to access this command via private message to me",
+                dry_run
             )
 
         self.log.info("Check if %s is admin only command." % cmd)

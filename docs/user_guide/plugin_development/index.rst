@@ -16,11 +16,16 @@ with sets of recipes on a range of topics describing how to handle more advanced
   botcommands
   messaging
   presence
+  mentions
   persistence
   configuration
+  streams
+  dependencies
+  dynaplugs
   scheduling
   webhooks
   testing
   logging
+  exceptions
   plugin_compatibility_settings
   backend_specifics

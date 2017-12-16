@@ -6,6 +6,12 @@ This backend lets you connect to the
 To select this backend,
 set `BACKEND = 'Slack'`.
 
+Extra Dependencies
+------------------
+
+You need to install this dependency before using Errbot with Slack::
+
+      pip install slackclient
 
 Account setup
 -------------
@@ -30,16 +36,18 @@ Bot admins
 ----------
 
 You can set `BOT_ADMINS` to configure which Slack users are bot administrators.
-Make sure to include the `@` sign.
-For example: `BOT_ADMINS = ('@gbin', '@zoni')`
+Make sure to include the `@` sign::
+
+    BOT_ADMINS = ('@gbin', '@zoni')
+
 
 Bot mentions using @
 --------------------
 
-To enable using the bot's name in `BOT_ALT_PREFIXES` for @mentions in Slack, you must use the bot's SlackID.
+To enable using the bot's name in `BOT_ALT_PREFIXES` for @mentions in Slack, simply add the bot's name as follows::
 
-1. Find the bot's Slack ID. You can obtain this using Slack's [API tester](https://api.slack.com/methods/users.list) or by inspecting the errbot debug logs (by setting `BOT_LOG_LEVEL = logging.DEBUG`). It should look like `U023BECGF`.
-2. Enter this ID in `BOT_ALT_PREFIXES` in the form: `<@ID_NUMBER>`. For the example above it would be `<@U023BECGF>`.
+    BOT_ALT_PREFIXES = ('@botname',)
+
 
 Channels/groups
 ---------------

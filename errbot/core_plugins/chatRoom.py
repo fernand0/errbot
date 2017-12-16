@@ -2,16 +2,8 @@ import logging
 
 from errbot import BotPlugin, botcmd, SeparatorArgParser, ShlexArgParser
 from errbot.backends.base import RoomNotJoinedError
-from errbot.utils import compat_str, PY3
-
-# 2to3 hack
-# thanks to https://github.com/oxplot/fysom/issues/1
-# which in turn references http://www.rfk.id.au/blog/entry/preparing-pyenchant-for-python-3/
-if PY3:
-    basestring = (str, bytes)
 
 log = logging.getLogger(__name__)
-log.debug("LOADING CHATROOM")
 
 
 class ChatRoom(BotPlugin):
@@ -32,16 +24,14 @@ class ChatRoom(BotPlugin):
                     self.log.exception("Joining room %s failed", repr(room))
 
     def _join_room(self, room):
+        username = self.bot_config.CHATROOM_FN
+        password = None
         if isinstance(room, (tuple, list)):
-            room_name = compat_str(room[0])
-            room_password = compat_str(room[1])
-            room, username, password = (room_name, self.bot_config.CHATROOM_FN, room_password)
+            room, password = room  # unpack
             self.log.info("Joining room {} with username {} and password".format(room, username))
         else:
-            room_name = compat_str(room)
-            room, username, password = (room_name, self.bot_config.CHATROOM_FN, None)
             self.log.info("Joining room {} with username {}".format(room, username))
-            self.query_room(room).join(username=self.bot_config.CHATROOM_FN, password=password)
+        self.query_room(room).join(username=self.bot_config.CHATROOM_FN, password=password)
 
     def deactivate(self):
         self.connected = False
@@ -67,7 +57,7 @@ class ChatRoom(BotPlugin):
         room.create()
         return "Created the room {}".format(room)
 
-    @botcmd()
+    @botcmd(split_args_with=ShlexArgParser())
     def room_join(self, message, args):
         """
         Join (creating it first if needed) a chatroom.
@@ -82,17 +72,20 @@ class ChatRoom(BotPlugin):
         Examples (IRC):
         !room join #example-room
         !room join #example-room super-secret-password
+        !room join #example-room "password with spaces"
         """
-        # We must account for password with whitespace before, after or in the middle
-        args = args.split(' ', 1)
         arglen = len(args)
         if arglen < 1:
             return "Please tell me which chatroom to join."
         args[0].strip()
 
-        room, password = (args[0], None) if arglen == 1 else (args[0], args[1])
-        self.query_room(room).join(username=self.bot_config.CHATROOM_FN, password=password)
-        return "Joined the room {}".format(room)
+        room_name, password = (args[0], None) if arglen == 1 else (args[0], args[1])
+        room = self.query_room(room_name)
+        if room is None:
+            return 'Cannot find room {}.'.format(room_name)
+
+        room.join(username=self.bot_config.CHATROOM_FN, password=password)
+        return "Joined the room {}".format(room_name)
 
     @botcmd(split_args_with=SeparatorArgParser())
     def room_leave(self, message, args):
@@ -228,24 +221,23 @@ class ChatRoom(BotPlugin):
                 return "Cannot set the topic for {}: {}".format(args[0], e)
             return "Topic for {} set.".format(args[0])
 
-    def callback_message(self, mess):
+    def callback_message(self, msg):
         try:
-            if mess.is_direct:
-                username = mess.frm.person
+            if msg.is_direct:
+                username = msg.frm.person
                 if username in self.bot_config.CHATROOM_RELAY:
                     self.log.debug('Message to relay from %s.' % username)
-                    body = mess.body
+                    body = msg.body
                     rooms = self.bot_config.CHATROOM_RELAY[username]
                     for roomstr in rooms:
-                        room = self.room_join(roomstr)
-                        self.send(room, body)
-            elif mess.is_group:
-                fr = mess.frm
+                        self.send(self.query_room(roomstr), body)
+            elif msg.is_group:
+                fr = msg.frm
                 chat_room = str(fr.room)
                 if chat_room in self.bot_config.REVERSE_CHATROOM_RELAY:
                     users_to_relay_to = self.bot_config.REVERSE_CHATROOM_RELAY[chat_room]
                     self.log.debug('Message to relay to %s.' % users_to_relay_to)
-                    body = '[%s] %s' % (fr.person, mess.body)
+                    body = '[%s] %s' % (fr.person, msg.body)
                     for user in users_to_relay_to:
                         self.send(user, body)
         except Exception as e:
