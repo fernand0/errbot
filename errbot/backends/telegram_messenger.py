@@ -279,9 +279,11 @@ class TelegramBackend(ErrBot):
 
     def send_message(self, msg):
         super().send_message(msg)
-        body = self.md_converter.convert(msg.body)
+        #body = self.md_converter.convert(msg.body)
+        body = msg.body
         try:
-            self.telegram.sendMessage(msg.to.id, body)
+            self.telegram.sendMessage(msg.to.id, body, parse_mode=telegram.ParseMode.MARKDOWN)
+            #self.telegram.sendMessage(msg.to.id, body)
         except Exception:
             log.exception(
                 "An exception occurred while trying to send the following message "
