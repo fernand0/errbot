@@ -3,7 +3,7 @@ import sys
 
 from errbot.backends.base import RoomError, Identifier, Person, RoomOccupant, Stream, ONLINE, Room
 from errbot.core import ErrBot
-from errbot.rendering import text
+from errbot.rendering import text, md
 from errbot.rendering.ansiext import enable_format, TEXT_CHRS
 
 
@@ -193,7 +193,8 @@ class TelegramBackend(ErrBot):
 
         compact = config.COMPACT_OUTPUT if hasattr(config, 'COMPACT_OUTPUT') else False
         enable_format('text', TEXT_CHRS, borders=not compact)
-        self.md_converter = text()
+        #self.md_converter = text()
+        self.md_converter = md()
 
     def serve_once(self):
         log.info("Initializing connection")
@@ -279,8 +280,7 @@ class TelegramBackend(ErrBot):
 
     def send_message(self, msg):
         super().send_message(msg)
-        #body = self.md_converter.convert(msg.body)
-        body = msg.body
+        body = self.md_converter.convert(msg.body)
         try:
             self.telegram.sendMessage(msg.to.id, body, parse_mode=telegram.ParseMode.MARKDOWN)
             #self.telegram.sendMessage(msg.to.id, body)
